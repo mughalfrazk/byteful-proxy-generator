@@ -124,6 +124,38 @@ describe('the error table', () => {
     ])
   })
 
+  /**
+   * The default wait is 1s, so a `Retry-After: 0` that retries in well under
+   * that proves the header is being read rather than ignored.
+   */
+  it('waits for the time Retry-After asks for instead of a fixed delay', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response('{}', { status: 429, headers: { 'Retry-After': '0' } }),
+      )
+      .mockResolvedValueOnce(jsonResponse(countryPage([['gb', 'UK', 10]])))
+
+    const { searchCountries } = await loadClient()
+    const startedAt = Date.now()
+    await expect(searchCountries()).resolves.toHaveLength(1)
+
+    expect(Date.now() - startedAt).toBeLessThan(500)
+  })
+
+  it('ignores a nonsense Retry-After and falls back to the default', async () => {
+    fetchMock.mockImplementation(
+      () =>
+        new Response('{}', {
+          status: 429,
+          headers: { 'Retry-After': 'next tuesday' },
+        }),
+    )
+
+    const { searchCountries } = await loadClient()
+    await expectCode(searchCountries(), 'lookup_unavailable')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('reports lookup_unavailable when the connection fails or times out', async () => {
     fetchMock.mockRejectedValue(new Error('The operation was aborted'))
 
@@ -255,6 +287,25 @@ describe('query strings', () => {
     await searchCities({ countryId: 'gb' })
 
     expect(String(fetchMock.mock.calls[0][0])).not.toContain('like_city_name')
+  })
+
+  /**
+   * Byteful reports `city_node_count: 0` for the only city in some countries
+   * that do have nodes (Singapore), so a floor of 1 emptied those dropdowns.
+   * The floor stays on countries and ASNs, where it behaves.
+   */
+  it('sets no node-count floor on cities, unlike countries and ASNs', async () => {
+    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
+
+    const { searchCities, searchAsns } = await loadClient()
+
+    await searchCities({ countryId: 'sg' })
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain(
+      'min_city_node_count',
+    )
+
+    await searchAsns({ countryId: 'sg' })
+    expect(String(fetchMock.mock.calls[1][0])).toContain('min_asn_node_count=1')
   })
 
   it('omits country_id for an ASN search with no country', async () => {

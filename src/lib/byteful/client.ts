@@ -20,7 +20,11 @@ import {
 
 const BASE_URL = 'https://api.byteful.com/1.0/public/user/'
 const TIMEOUT_MS = 8_000
-const RETRY_AFTER_MS = 1_000
+
+/** Used when a 429 carries no usable `Retry-After`. */
+const DEFAULT_RETRY_AFTER_MS = 1_000
+/** A hostile or absurd `Retry-After` must not hold the request open. */
+const MAX_RETRY_AFTER_MS = 3_000
 
 const COUNTRY_PER_PAGE = 100
 const SEARCH_PER_PAGE = 50
@@ -77,7 +81,7 @@ async function requestJson(
   let response = await send(url)
 
   if (response.status === 429) {
-    await sleep(RETRY_AFTER_MS)
+    await sleep(readRetryAfter(response))
     response = await send(url)
   }
 
@@ -165,6 +169,22 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * How long to wait before retrying a 429, from the response's `Retry-After`.
+ *
+ * Waiting the server's stated time beats guessing: a fixed delay retries too
+ * early under a longer window and burns the second attempt. Only the
+ * delay-seconds form is handled — the HTTP-date form is legal but Byteful does
+ * not send it, and a wrong date parse would be worse than the default.
+ */
+function readRetryAfter(response: Response): number {
+  const seconds = Number(response.headers.get('Retry-After'))
+
+  if (!Number.isFinite(seconds) || seconds < 0) return DEFAULT_RETRY_AFTER_MS
+
+  return Math.min(seconds * 1_000, MAX_RETRY_AFTER_MS)
+}
+
 const byName = (a: { name: string }, b: { name: string }) =>
   a.name.localeCompare(b.name)
 
@@ -215,6 +235,13 @@ export const searchCountries = cached<void, Country[]>(
  * silently returns the whole world. The country lives in `subdivision_id`, an
  * ISO 3166-2 code such as `gb-lnd`, so the filter is a prefix match on that:
  * `like_subdivision_id=gb%`.
+ *
+ * Unlike the country and ASN lookups, this one does **not** set a node-count
+ * floor. Byteful reports `city_node_count: 0` for some cities in countries that
+ * do have nodes — Singapore has 4,798 country nodes and exactly one city, at 0
+ * — so a floor of 1 left those countries with an empty dropdown. Sorting by
+ * node count already pushes empty cities to the bottom, and every option shows
+ * its count, so the user can see what they are choosing.
  */
 export const searchCities = cached(
   SEARCH_TTL_MS,
@@ -226,7 +253,6 @@ export const searchCities = cached(
     const raw = await requestJson(path, {
       like_subdivision_id: `${countryId}%`,
       like_city_name: query ? `%${query}%` : undefined,
-      min_city_node_count: 1,
       per_page: SEARCH_PER_PAGE,
       sort_by: 'city_node_count',
     })
