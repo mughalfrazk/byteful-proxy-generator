@@ -43,14 +43,24 @@ export function ResultPanel({
   onRetry: () => void
 }) {
   const [copied, setCopied] = useState(false)
+  /**
+   * The clipboard can refuse: it needs a secure context, and the permission
+   * can be denied. Saying so beats a button that silently does nothing — the
+   * list is still on screen and selectable.
+   */
+  const [actionError, setActionError] = useState<string | null>(null)
 
   async function handleCopy(text: string) {
     try {
       await navigator.clipboard.writeText(text)
+      setActionError(null)
       setCopied(true)
       setTimeout(() => setCopied(false), 2_000)
     } catch {
       setCopied(false)
+      setActionError(
+        'Could not copy to the clipboard. Select the list and copy it manually.',
+      )
     }
   }
 
@@ -61,8 +71,14 @@ export function ResultPanel({
     const anchor = document.createElement('a')
     anchor.href = url
     anchor.download = filename
+
+    // The anchor has to be in the document for the click to count in Firefox,
+    // and the object URL has to outlive the click — revoking it synchronously
+    // races the browser starting the download.
+    document.body.append(anchor)
     anchor.click()
-    URL.revokeObjectURL(url)
+    anchor.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 0)
   }
 
   if (state.status === 'idle') {
@@ -151,6 +167,12 @@ export function ResultPanel({
         </>
       }
     >
+      {actionError ? (
+        <p role="alert" className="mb-3 text-[13px] text-red-600">
+          {actionError}
+        </p>
+      ) : null}
+
       <Textarea
         readOnly
         aria-label="Generated proxy list"
