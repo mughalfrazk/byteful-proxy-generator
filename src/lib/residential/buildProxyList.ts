@@ -51,10 +51,7 @@ export function buildProxyList(request: ListRequest): string[] {
     return Array.from({ length: list_count }, () => toProxy(username))
   }
 
-  // The Set makes the spec's uniqueness rule structural rather than
-  // probabilistic. With 36^16 possible IDs a collision inside a 1000-item list
-  // is unreachable in practice; the loop is not there because collisions are
-  // expected, it is there so uniqueness is guaranteed by construction.
+  // A Set makes the spec's uniqueness rule structural rather than probabilistic.
   const sessionIds = new Set<string>()
   while (sessionIds.size < list_count) {
     sessionIds.add(generateSessionId())

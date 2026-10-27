@@ -24,14 +24,16 @@ export const QuerySchema = z
  * string is ignored rather than forwarded, so these routes cannot be used as
  * an open proxy onto Byteful's parameter surface.
  */
-export function readParams<T extends z.ZodType>(
+export function readParams<T extends z.ZodObject>(
   request: Request,
   schema: T,
 ): z.infer<T> {
   const url = new URL(request.url)
   const raw: Record<string, string> = {}
 
-  for (const key of Object.keys((schema as unknown as { shape: object }).shape)) {
+  // `z.ZodObject` is what makes `.shape` reachable without a cast, and it is
+  // the only schema kind this can accept: the keys are read off the shape.
+  for (const key of Object.keys(schema.shape)) {
     const value = url.searchParams.get(key)
     if (value !== null && value !== '') raw[key] = value
   }
@@ -39,7 +41,7 @@ export function readParams<T extends z.ZodType>(
   const parsed = schema.safeParse(raw)
   if (!parsed.success) throw invalidParameter(parsed.error)
 
-  return parsed.data as z.infer<T>
+  return parsed.data
 }
 
 export function lookupResponse<T>(data: T[]): Response {

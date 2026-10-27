@@ -9,27 +9,19 @@ type Entry<T> = { value: T; expiresAt: number }
 const MAX_ENTRIES = 500
 
 /**
- * A small in-process TTL cache in front of Byteful.
+ * A small in-process TTL cache in front of Byteful, protecting the account's
+ * shared 20 requests/second budget.
  *
- * Why not `use cache` / the Next Data Cache? This app runs with
- * `cacheComponents`, where a value crossing the cache boundary is serialised —
- * and so is anything thrown. An `AppError` thrown inside a cached function
- * comes back out as a plain `Error` with a redacted message in production,
- * which collapses `upstream_error`, `lookup_unavailable` and
- * `server_misconfigured` into one `internal_error`. The documented error table
- * is part of the contract, so the cache lives here instead, on our side of the
- * throw.
+ * Only successes are cached, so a rate-limited lookup is not pinned in place
+ * for the next ten minutes. In-flight requests are shared, so N users typing
+ * the same query produce one upstream call rather than N.
  *
- * Two properties matter for the shared 20 requests/second budget:
+ * Not `use cache`: under `cacheComponents` a thrown value crossing the cache
+ * boundary is serialised, which turns a typed `AppError` into a plain `Error`
+ * and collapses the documented error table into one `internal_error`. The
+ * cache therefore lives on our side of the throw.
  *
- *   - **only successes are cached**, so a rate-limited lookup is not pinned in
- *     place for the next ten minutes;
- *   - **in-flight requests are shared**, so N users typing the same query
- *     produce one upstream call rather than N.
- *
- * It is per-instance, so a multi-instance deployment caches once per instance.
- * A shared cache (Redis, or Next's Data Cache once it can carry typed
- * failures) is the production answer; this is the right size for one process.
+ * TODO per-instance only. A shared cache (Redis) is the production answer.
  */
 export function cached<A, T>(
   ttlMs: number,
