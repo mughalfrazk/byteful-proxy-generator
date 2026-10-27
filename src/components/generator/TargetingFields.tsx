@@ -22,14 +22,13 @@ export function TargetingFields({
   const cityAlias = form.watch('city_alias')
   const asnId = form.watch('asn_id')
 
-  const [citySearch, setCitySearch] = useState('')
+  // Only the ASN search goes upstream, so only it needs debouncing; cities are
+  // held whole and filtered by the combobox itself.
   const [asnSearch, setAsnSearch] = useState('')
-
-  const debouncedCitySearch = useDebouncedValue(citySearch, DEBOUNCE_MS)
   const debouncedAsnSearch = useDebouncedValue(asnSearch, DEBOUNCE_MS)
 
   const countries = useCountries()
-  const cities = useCities(countryId, debouncedCitySearch)
+  const cities = useCities(countryId)
   const asns = useAsns(countryId, debouncedAsnSearch)
 
   /**
@@ -43,13 +42,15 @@ export function TargetingFields({
    *   - **only when the search box is empty**, so a query that matches nothing
    *     ("xyz") reports no matches inside the open list rather than disabling
    *     the field — which would trap the user with no way to clear the search.
+   *     This applies to server-filtered lookups only; a locally filtered list
+   *     is already the complete set, so its caller passes no search.
    *
    * An error is not emptiness either: that case keeps the field open so the
    * retry button inside it stays reachable.
    */
   function isEmptyLookup(
     lookup: { options: unknown[]; isLoading: boolean; isValidating: boolean; error?: Error },
-    search: string,
+    search = '',
   ): boolean {
     return (
       search === '' &&
@@ -60,8 +61,7 @@ export function TargetingFields({
     )
   }
 
-  const noCities =
-    Boolean(countryId) && isEmptyLookup(cities, debouncedCitySearch)
+  const noCities = Boolean(countryId) && isEmptyLookup(cities)
   const noAsns = isEmptyLookup(asns, debouncedAsnSearch)
 
   const countryOptions: ComboboxOption[] = countries.options.map((country) => ({
@@ -70,9 +70,24 @@ export function TargetingFields({
     nodeCount: country.nodeCount,
   }))
 
+  /**
+   * City names are not unique inside a country: the US has an Albany in NY, GA
+   * and OR. Three identical rows would be a coin toss, so the subdivision is
+   * appended — but only to the names that actually repeat, since most countries
+   * have none and a code on every row is noise ("Tokyo (13)").
+   */
+  const duplicateCityNames = new Set(
+    cities.options
+      .map((city) => city.name)
+      .filter((name, index, names) => names.indexOf(name) !== index),
+  )
+
   const cityOptions: ComboboxOption[] = cities.options.map((city) => ({
     value: city.alias,
-    label: city.name,
+    label:
+      duplicateCityNames.has(city.name) && city.subdivision
+        ? `${city.name} (${city.subdivision})`
+        : city.name,
     nodeCount: city.nodeCount,
   }))
 
@@ -92,7 +107,6 @@ export function TargetingFields({
     form.setValue('country_id', value, { shouldValidate: true })
     form.setValue('city_alias', undefined, { shouldValidate: true })
     form.setValue('asn_id', undefined, { shouldValidate: true })
-    setCitySearch('')
     setAsnSearch('')
   }
 
@@ -130,7 +144,7 @@ export function TargetingFields({
           !countryId
             ? 'Choose a country first.'
             : noCities
-              ? 'Byteful lists no cities for this country. Target the country itself, or an ASN.'
+              ? 'No cities available for this country.'
               : 'Sorted by available nodes. Type to search.'
         }
       >
@@ -150,10 +164,9 @@ export function TargetingFields({
           onChange={(value) =>
             form.setValue('city_alias', value, { shouldValidate: true })
           }
-          // Server-side search: the city list is far too large to hold in the
-          // browser and filter there.
-          search={citySearch}
-          onSearchChange={setCitySearch}
+          // The whole country's cities are already here, so filtering is local
+          // and instant — no debounce, no round trip per keystroke.
+          filterLocally
           isLoading={cities.isLoading}
           error={cities.error}
           onRetry={cities.retry}
@@ -170,7 +183,7 @@ export function TargetingFields({
         error={errors.asn_id?.message}
         description={
           noAsns
-            ? 'Byteful lists no ASNs for this country. Clear the country to search all ASNs.'
+            ? 'No ASNs for this country. Clear the country to search all ASNs.'
             : countryId
               ? 'Limited to the selected country.'
               : 'Works with or without a country.'

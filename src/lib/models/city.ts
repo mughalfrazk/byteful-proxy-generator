@@ -25,6 +25,13 @@ export type City = {
   alias: string
   name: string
   nodeCount: number
+  /**
+   * The subdivision code without its country prefix, upper-cased: `NY` from
+   * `us-ny`. City names repeat within a country — the US has three Albanys —
+   * so this is what tells them apart in the picker. Empty when Byteful omits
+   * the field, which no observed row does.
+   */
+  subdivision: string
 }
 
 export function narrowCity(raw: z.infer<typeof BytefulCitySchema>): City {
@@ -32,5 +39,6 @@ export function narrowCity(raw: z.infer<typeof BytefulCitySchema>): City {
     alias: raw.city_alias,
     name: raw.city_name,
     nodeCount: raw.city_node_count ?? 0,
+    subdivision: (raw.subdivision_id?.split('-')[1] ?? '').toUpperCase(),
   }
 }

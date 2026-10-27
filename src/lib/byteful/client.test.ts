@@ -269,24 +269,27 @@ describe('query strings', () => {
     expect(url).not.toContain('sort_by=-city_node_count')
   })
 
-  it('wraps a city query in SQL-style wildcards', async () => {
-    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
-
-    const { searchCities } = await loadClient()
-    await searchCities({ countryId: 'gb', query: 'lon' })
-
-    expect(String(fetchMock.mock.calls[0][0])).toContain(
-      'like_city_name=%25lon%25',
-    )
-  })
-
-  it('omits the city query parameter entirely when there is no query', async () => {
+  /**
+   * Cities are bounded per country, so the whole list is fetched and filtered
+   * in the browser. Nothing should ever narrow it upstream by name.
+   */
+  it('never filters cities by name upstream', async () => {
     fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
 
     const { searchCities } = await loadClient()
     await searchCities({ countryId: 'gb' })
 
     expect(String(fetchMock.mock.calls[0][0])).not.toContain('like_city_name')
+  })
+
+  it('requests cities at the per_page ceiling Byteful allows', async () => {
+    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
+
+    const { searchCities } = await loadClient()
+    await searchCities({ countryId: 'gb' })
+
+    // 1001 is rejected with "Search per_page parameter is limited to 1000".
+    expect(String(fetchMock.mock.calls[0][0])).toContain('per_page=1000')
   })
 
   /**
@@ -319,6 +322,88 @@ describe('query strings', () => {
     expect(url).toContain('like_asn_name=%25virgin%25')
   })
 
+  it('fetches every page of cities, not just the first', async () => {
+    fetchMock.mockImplementation((input: string | URL) => {
+      const page = new URL(String(input)).searchParams.get('page')
+      return jsonResponse({
+        data: [
+          {
+            city_alias: `city_${page}`,
+            city_name: `City ${page}`,
+            city_node_count: 1,
+            subdivision_id: 'cn-bj',
+          },
+        ],
+        page: Number(page),
+        per_page: 1_000,
+        item_count: 1,
+        // 1,191 cities, as China actually has: two pages, not one.
+        total_count: 1_191,
+      })
+    })
+
+    const { searchCities } = await loadClient()
+    const cities = await searchCities({ countryId: 'cn' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(cities.map((city) => city.alias)).toEqual(['city_1', 'city_2'])
+  })
+
+  it('narrows a city row, deriving the subdivision that disambiguates it', async () => {
+    fetchMock.mockImplementation(() =>
+      jsonResponse({
+        data: [
+          {
+            city_alias: 'us_ga_albany',
+            city_name: 'Albany',
+            city_node_count: 535,
+            subdivision_id: 'us-ga',
+          },
+        ],
+      }),
+    )
+
+    const { searchCities } = await loadClient()
+    await expect(searchCities({ countryId: 'us' })).resolves.toEqual([
+      {
+        alias: 'us_ga_albany',
+        name: 'Albany',
+        nodeCount: 535,
+        subdivision: 'GA',
+      },
+    ])
+  })
+
+  it('sorts cities by node count across stitched-together pages', async () => {
+    fetchMock.mockImplementation((input: string | URL) => {
+      const page = new URL(String(input)).searchParams.get('page')
+      // Page 2 arrives holding the busiest city, so returning the pages in
+      // order would put it last.
+      const rows =
+        page === '1'
+          ? [['a', 'A', 10] as const]
+          : [['b', 'B', 99] as const]
+
+      return jsonResponse({
+        data: rows.map(([city_alias, city_name, city_node_count]) => ({
+          city_alias,
+          city_name,
+          city_node_count,
+          subdivision_id: 'gb-lnd',
+        })),
+        page: Number(page),
+        per_page: 1_000,
+        item_count: 1,
+        total_count: 1_500,
+      })
+    })
+
+    const { searchCities } = await loadClient()
+    const cities = await searchCities({ countryId: 'gb' })
+
+    expect(cities.map((city) => city.name)).toEqual(['B', 'A'])
+  })
+
   it('narrows an ASN row to the fields the app uses', async () => {
     fetchMock.mockImplementation(() =>
       jsonResponse({
@@ -345,9 +430,9 @@ describe('the server-side cache', () => {
   it('serves a repeated identical search from memory', async () => {
     fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
 
-    const { searchCities } = await loadClient()
-    await searchCities({ countryId: 'gb', query: 'lon' })
-    await searchCities({ countryId: 'gb', query: 'lon' })
+    const { searchAsns } = await loadClient()
+    await searchAsns({ countryId: 'gb', query: 'virgin' })
+    await searchAsns({ countryId: 'gb', query: 'virgin' })
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
@@ -355,9 +440,20 @@ describe('the server-side cache', () => {
   it('keys on the query, so a different search still goes upstream', async () => {
     fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
 
+    const { searchAsns } = await loadClient()
+    await searchAsns({ countryId: 'gb', query: 'virgin' })
+    await searchAsns({ countryId: 'gb', query: 'sky' })
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('keys cities on the country alone', async () => {
+    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
+
     const { searchCities } = await loadClient()
-    await searchCities({ countryId: 'gb', query: 'lon' })
-    await searchCities({ countryId: 'gb', query: 'man' })
+    await searchCities({ countryId: 'gb' })
+    await searchCities({ countryId: 'gb' })
+    await searchCities({ countryId: 'de' })
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
@@ -367,9 +463,9 @@ describe('the server-side cache', () => {
 
     const { searchCities } = await loadClient()
     await Promise.all([
-      searchCities({ countryId: 'gb', query: 'lon' }),
-      searchCities({ countryId: 'gb', query: 'lon' }),
-      searchCities({ countryId: 'gb', query: 'lon' }),
+      searchCities({ countryId: 'gb' }),
+      searchCities({ countryId: 'gb' }),
+      searchCities({ countryId: 'gb' }),
     ])
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -381,12 +477,7 @@ describe('the server-side cache', () => {
       .mockResolvedValueOnce(jsonResponse({ data: [] }))
 
     const { searchCities } = await loadClient()
-    await expectCode(
-      searchCities({ countryId: 'gb', query: 'lon' }),
-      'upstream_error',
-    )
-    await expect(
-      searchCities({ countryId: 'gb', query: 'lon' }),
-    ).resolves.toEqual([])
+    await expectCode(searchCities({ countryId: 'gb' }), 'upstream_error')
+    await expect(searchCities({ countryId: 'gb' })).resolves.toEqual([])
   })
 })

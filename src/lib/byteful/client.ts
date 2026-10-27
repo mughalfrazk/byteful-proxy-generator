@@ -27,6 +27,8 @@ const DEFAULT_RETRY_AFTER_MS = 1_000
 const MAX_RETRY_AFTER_MS = 3_000
 
 const COUNTRY_PER_PAGE = 100
+/** Byteful rejects a `per_page` above 1000 outright. */
+const CITY_PER_PAGE = 1_000
 const SEARCH_PER_PAGE = 50
 
 /** Server-side cache TTLs. Countries move rarely; city and ASN searches churn. */
@@ -229,39 +231,64 @@ export const searchCountries = cached<void, Country[]>(
 )
 
 /**
- * Cities in one country, optionally matching a query.
+ * Every city in one country.
  *
  * Byteful has no country filter on this endpoint — passing `country_id`
  * silently returns the whole world. The country lives in `subdivision_id`, an
  * ISO 3166-2 code such as `gb-lnd`, so the filter is a prefix match on that:
  * `like_subdivision_id=gb%`.
  *
- * Unlike the country and ASN lookups, this one does **not** set a node-count
- * floor. Byteful reports `city_node_count: 0` for some cities in countries that
- * do have nodes — Singapore has 4,798 country nodes and exactly one city, at 0
- * — so a floor of 1 left those countries with an empty dropdown. Sorting by
- * node count already pushes empty cities to the bottom, and every option shows
- * its count, so the user can see what they are choosing.
+ * The whole list is fetched rather than a top slice, because cities are bounded
+ * per country — the largest observed is China at 1,191 — so one or two pages
+ * cover any country, and the browser can then filter them instantly. ASNs get
+ * the opposite treatment for the opposite reason: see `searchAsns`.
+ *
+ * Unlike the country and ASN lookups, this one sets no node-count floor.
+ * Byteful reports `city_node_count: 0` for the only city in some countries that
+ * do have nodes — Singapore has 4,798 country nodes and one city, at 0 — so a
+ * floor of 1 left those countries with an empty dropdown. The sort pushes empty
+ * cities to the bottom and every option shows its count, so nothing is hidden.
  */
 export const searchCities = cached(
   SEARCH_TTL_MS,
-  ({ countryId, query }: { countryId: string; query?: string }) =>
-    `cities:${countryId}:${query ?? ''}`,
-  async ({ countryId, query }): Promise<City[]> => {
+  ({ countryId }: { countryId: string }) => `cities:${countryId}`,
+  async ({ countryId }): Promise<City[]> => {
     const path = 'city/search'
-
-    const raw = await requestJson(path, {
+    const query: Record<string, QueryValue> = {
       like_subdivision_id: `${countryId}%`,
-      like_city_name: query ? `%${query}%` : undefined,
-      per_page: SEARCH_PER_PAGE,
+      per_page: CITY_PER_PAGE,
       sort_by: 'city_node_count',
-    })
+    }
 
-    return parse(BytefulCitySearchSchema, raw, path).data.map(narrowCity)
+    const firstRaw = await requestJson(path, { ...query, page: 1 })
+    const first = parse(BytefulCitySearchSchema, firstRaw, path)
+
+    const totalPages = readTotalPages(first, CITY_PER_PAGE)
+    const rest = await Promise.all(
+      Array.from({ length: Math.max(0, totalPages - 1) }, (_, i) =>
+        requestJson(path, { ...query, page: i + 2 }).then((raw) =>
+          parse(BytefulCitySearchSchema, raw, path),
+        ),
+      ),
+    )
+
+    // Re-sorted locally because pages arrive in parallel: Byteful orders within
+    // a page, not across the set we stitch back together.
+    return [first, ...rest]
+      .flatMap((page) => page.data)
+      .map(narrowCity)
+      .sort((a, b) => b.nodeCount - a.nodeCount || byName(a, b))
   },
 )
 
-/** ASNs, optionally filtered by country and/or matching a query. */
+/**
+ * ASNs, optionally filtered by country and/or matching a query.
+ *
+ * Unlike cities, this returns a top slice: there are 15,077 ASNs with nodes
+ * worldwide and 4,675 in Brazil alone, so there is no bounded list to hold in
+ * the browser. The user sees the busiest `SEARCH_PER_PAGE` and reaches the rest
+ * by typing, which re-queries upstream.
+ */
 export const searchAsns = cached(
   SEARCH_TTL_MS,
   ({ countryId, query }: { countryId?: string; query?: string }) =>

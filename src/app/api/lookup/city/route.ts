@@ -3,27 +3,22 @@ import { z } from 'zod'
 import { searchCities } from '@/lib/byteful/client'
 import { withErrorHandling } from '@/lib/errors'
 
-import {
-  CountryIdSchema,
-  QuerySchema,
-  lookupResponse,
-  readParams,
-} from '../shared'
+import { CountryIdSchema, lookupResponse, readParams } from '../shared'
 
 const ParamsSchema = z.object({
   country_id: CountryIdSchema,
-  query: QuerySchema,
 })
 
 /**
- * `GET /api/lookup/city?country_id=gb&query=nor`
+ * `GET /api/lookup/city?country_id=gb`
  *
- * `country_id` is required: the city list is far too large to return
- * unfiltered. An empty `query` returns the top cities by node count rather
- * than an empty box.
+ * Returns every city in the country, ordered by node count. `country_id` is
+ * required — the unfiltered list spans the world — but there is no `query`
+ * parameter: a country's cities are few enough to send whole and filter in the
+ * browser, so searching never needs a round trip.
  */
 export const GET = withErrorHandling(async (request: Request) => {
-  const { country_id, query } = readParams(request, ParamsSchema)
+  const { country_id } = readParams(request, ParamsSchema)
 
-  return lookupResponse(await searchCities({ countryId: country_id, query }))
+  return lookupResponse(await searchCities({ countryId: country_id }))
 })

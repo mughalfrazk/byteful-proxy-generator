@@ -188,7 +188,13 @@ export function LocationCombobox({
                   {options.map((option) => (
                     <CommandItem
                       key={option.value}
-                      value={filterLocally ? option.label : option.value}
+                      // cmdk identifies an item by `value`, so this has to be
+                      // the unique one (an alias, not a label): two cities can
+                      // share a name, and a duplicate value makes keyboard
+                      // selection pick the wrong row. The label goes in
+                      // `keywords` so typing still matches what is on screen.
+                      value={option.value}
+                      keywords={[option.label]}
                       onSelect={() => handleSelect(option)}
                       className={cn(
                         option.value === value && 'text-brand font-medium',

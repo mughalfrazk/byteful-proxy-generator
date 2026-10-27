@@ -58,15 +58,16 @@ export function useCountries(): LookupResult<Country> {
   })
 }
 
-/** Cities need a country; without one there is nothing to search. */
-export function useCities(
-  countryId: string | undefined,
-  query: string,
-): LookupResult<City> {
+/**
+ * Every city in the country, fetched once per country and filtered in the
+ * browser. Without a country there is nothing to fetch, so the key is `null`.
+ */
+export function useCities(countryId: string | undefined): LookupResult<City> {
   return useLookup<City>(
     countryId
-      ? `/api/lookup/city${buildQuery({ country_id: countryId, query })}`
+      ? `/api/lookup/city${buildQuery({ country_id: countryId })}`
       : null,
+    { revalidateIfStale: false },
   )
 }
 
