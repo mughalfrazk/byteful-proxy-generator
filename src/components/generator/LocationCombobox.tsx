@@ -39,11 +39,6 @@ type Props = {
   /** The search text. Owned by the parent only when searching is server-side. */
   search?: string
   onSearchChange?: (search: string) => void
-  /**
-   * Lets the parent defer the lookup until the list is actually opened, so a
-   * dropdown nobody touches costs no upstream request.
-   */
-  onOpenChange?: (open: boolean) => void
   /** `true` for lists we hold whole (countries); `false` for server-side search. */
   filterLocally?: boolean
   isLoading?: boolean
@@ -76,7 +71,6 @@ export function LocationCombobox({
   onChange,
   search,
   onSearchChange,
-  onOpenChange,
   filterLocally = false,
   isLoading = false,
   error,
@@ -106,7 +100,6 @@ export function LocationCombobox({
 
   function handleOpenChange(next: boolean) {
     setOpen(next)
-    onOpenChange?.(next)
     if (!next) setSearchText('')
   }
 

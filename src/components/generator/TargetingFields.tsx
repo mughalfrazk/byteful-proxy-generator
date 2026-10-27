@@ -25,22 +25,44 @@ export function TargetingFields({
   const [citySearch, setCitySearch] = useState('')
   const [asnSearch, setAsnSearch] = useState('')
 
-  /**
-   * City and ASN are optional, and most lists are generated without them, so
-   * their lookups wait until the dropdown is first opened. Once opened the flag
-   * stays on, so re-opening or changing country serves from the SWR cache
-   * rather than re-fetching on every toggle. Countries load eagerly: that
-   * dropdown is the entry point to the whole section.
-   */
-  const [cityActive, setCityActive] = useState(false)
-  const [asnActive, setAsnActive] = useState(false)
-
   const debouncedCitySearch = useDebouncedValue(citySearch, DEBOUNCE_MS)
   const debouncedAsnSearch = useDebouncedValue(asnSearch, DEBOUNCE_MS)
 
   const countries = useCountries()
-  const cities = useCities(countryId, debouncedCitySearch, cityActive)
-  const asns = useAsns(countryId, debouncedAsnSearch, asnActive)
+  const cities = useCities(countryId, debouncedCitySearch)
+  const asns = useAsns(countryId, debouncedAsnSearch)
+
+  /**
+   * Whether a lookup came back with nothing to offer, which is what lets the
+   * field say so up front instead of making the user open an empty list.
+   *
+   * Two conditions keep this honest:
+   *
+   *   - **only while no request is in flight**, so "not loaded yet" is never
+   *     mistaken for "nothing exists";
+   *   - **only when the search box is empty**, so a query that matches nothing
+   *     ("xyz") reports no matches inside the open list rather than disabling
+   *     the field — which would trap the user with no way to clear the search.
+   *
+   * An error is not emptiness either: that case keeps the field open so the
+   * retry button inside it stays reachable.
+   */
+  function isEmptyLookup(
+    lookup: { options: unknown[]; isLoading: boolean; isValidating: boolean; error?: Error },
+    search: string,
+  ): boolean {
+    return (
+      search === '' &&
+      !lookup.isLoading &&
+      !lookup.isValidating &&
+      !lookup.error &&
+      lookup.options.length === 0
+    )
+  }
+
+  const noCities =
+    Boolean(countryId) && isEmptyLookup(cities, debouncedCitySearch)
+  const noAsns = isEmptyLookup(asns, debouncedAsnSearch)
 
   const countryOptions: ComboboxOption[] = countries.options.map((country) => ({
     value: country.id,
@@ -105,15 +127,23 @@ export function TargetingFields({
         label="City"
         error={errors.city_alias?.message}
         description={
-          countryId
-            ? 'Sorted by available nodes. Type to search.'
-            : 'Choose a country first.'
+          !countryId
+            ? 'Choose a country first.'
+            : noCities
+              ? 'Byteful lists no cities for this country. Target the country itself, or an ASN.'
+              : 'Sorted by available nodes. Type to search.'
         }
       >
         <LocationCombobox
           id="city_alias"
           label="City"
-          placeholder={countryId ? 'Any city' : 'Choose a country first'}
+          placeholder={
+            !countryId
+              ? 'Choose a country first'
+              : noCities
+                ? 'No cities available'
+                : 'Any city'
+          }
           searchPlaceholder="Search cities…"
           options={cityOptions}
           value={cityAlias}
@@ -124,11 +154,10 @@ export function TargetingFields({
           // browser and filter there.
           search={citySearch}
           onSearchChange={setCitySearch}
-          onOpenChange={(open) => open && setCityActive(true)}
           isLoading={cities.isLoading}
           error={cities.error}
           onRetry={cities.retry}
-          disabled={!countryId}
+          disabled={!countryId || noCities}
           emptyLabel={(search) =>
             search ? `No cities match “${search}”` : 'No cities available'
           }
@@ -140,15 +169,17 @@ export function TargetingFields({
         label="ASN"
         error={errors.asn_id?.message}
         description={
-          countryId
-            ? 'Limited to the selected country.'
-            : 'Works with or without a country.'
+          noAsns
+            ? 'Byteful lists no ASNs for this country. Clear the country to search all ASNs.'
+            : countryId
+              ? 'Limited to the selected country.'
+              : 'Works with or without a country.'
         }
       >
         <LocationCombobox
           id="asn_id"
           label="ASN"
-          placeholder="Any ASN"
+          placeholder={noAsns ? 'No ASNs available' : 'Any ASN'}
           searchPlaceholder="Search ASNs…"
           options={asnOptions}
           value={asnId === undefined ? undefined : String(asnId)}
@@ -161,10 +192,10 @@ export function TargetingFields({
           }
           search={asnSearch}
           onSearchChange={setAsnSearch}
-          onOpenChange={(open) => open && setAsnActive(true)}
           isLoading={asns.isLoading}
           error={asns.error}
           onRetry={asns.retry}
+          disabled={noAsns}
           emptyLabel={(search) =>
             search ? `No ASNs match “${search}”` : 'No ASNs available'
           }

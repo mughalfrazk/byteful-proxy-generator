@@ -1,6 +1,6 @@
 'use client'
 
-import useSWR from 'swr'
+import useSWR, { type SWRConfiguration } from 'swr'
 
 import type { Asn, City, Country } from '@/lib/models'
 
@@ -9,6 +9,13 @@ type LookupResponse<T> = { data: T[] }
 export type LookupResult<T> = {
   options: T[]
   isLoading: boolean
+  /**
+   * True while any request for this lookup is in flight, including a
+   * revalidation that is serving stale data. Callers deciding whether a list is
+   * genuinely empty must wait for this to settle, otherwise they would read
+   * "no options yet" as "no options exist".
+   */
+  isValidating: boolean
   error: Error | undefined
   retry: () => void
 }
@@ -23,14 +30,19 @@ function buildQuery(params: Record<string, string | number | undefined>) {
   return qs ? `?${qs}` : ''
 }
 
-function useLookup<T>(key: string | null): LookupResult<T> {
-  const { data, error, isLoading, mutate } = useSWR<LookupResponse<T>>(key, {
-    keepPreviousData: true,
-  })
+/** A `null` key is how SWR is told not to fetch. */
+function useLookup<T>(
+  key: string | null,
+  config?: SWRConfiguration<LookupResponse<T>>,
+): LookupResult<T> {
+  const { data, error, isLoading, isValidating, mutate } = useSWR<
+    LookupResponse<T>
+  >(key, { keepPreviousData: true, ...config })
 
   return {
     options: data?.data ?? [],
     isLoading,
+    isValidating,
     error,
     retry: () => void mutate(),
   }
@@ -41,45 +53,33 @@ function useLookup<T>(key: string | null): LookupResult<T> {
  * stale cache entry would only cause a flicker for data that barely changes.
  */
 export function useCountries(): LookupResult<Country> {
-  const { data, error, isLoading, mutate } = useSWR<LookupResponse<Country>>(
-    '/api/lookup/country',
-    { revalidateIfStale: false, keepPreviousData: true },
-  )
-
-  return {
-    options: data?.data ?? [],
-    isLoading,
-    error,
-    retry: () => void mutate(),
-  }
+  return useLookup<Country>('/api/lookup/country', {
+    revalidateIfStale: false,
+  })
 }
 
-/**
- * A `null` key is how SWR is told not to fetch. Both lookups below stay `null`
- * until the field is `enabled` — the parent turns that on when the dropdown is
- * first opened — so a targeting field nobody touches costs no upstream request
- * against the account's shared rate limit.
- */
+/** Cities need a country; without one there is nothing to search. */
 export function useCities(
   countryId: string | undefined,
   query: string,
-  enabled: boolean,
 ): LookupResult<City> {
   return useLookup<City>(
-    enabled && countryId
+    countryId
       ? `/api/lookup/city${buildQuery({ country_id: countryId, query })}`
       : null,
   )
 }
 
+/**
+ * ASN targeting works with or without a country, so this loads on mount and
+ * re-narrows whenever the country changes. Loading it up front is what lets the
+ * field show "No ASNs available" before the user opens it.
+ */
 export function useAsns(
   countryId: string | undefined,
   query: string,
-  enabled: boolean,
 ): LookupResult<Asn> {
   return useLookup<Asn>(
-    enabled
-      ? `/api/lookup/asn${buildQuery({ country_id: countryId, query })}`
-      : null,
+    `/api/lookup/asn${buildQuery({ country_id: countryId, query })}`,
   )
 }
