@@ -6,7 +6,6 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import {
   Command,
-  CommandEmpty,
   CommandInput,
   CommandItem,
   CommandList,
@@ -19,6 +18,13 @@ import {
 import { cn } from '@/lib/utils'
 
 import { CONTROL_CLASS } from './Field'
+
+/**
+ * How many rows are painted at once. Enough that the untyped list looks
+ * complete for every country, small enough that opening and typing stay
+ * instant on the worldwide ASN list.
+ */
+const MAX_VISIBLE_OPTIONS = 100
 
 export type ComboboxOption = {
   value: string
@@ -36,11 +42,6 @@ type Props = {
   /** The selected value, i.e. what the form holds. */
   value: string | undefined
   onChange: (value: string | undefined) => void
-  /** The search text. Owned by the parent only when searching is server-side. */
-  search?: string
-  onSearchChange?: (search: string) => void
-  /** `true` for lists we hold whole (countries); `false` for server-side search. */
-  filterLocally?: boolean
   isLoading?: boolean
   error?: Error
   onRetry?: () => void
@@ -69,9 +70,6 @@ export function LocationCombobox({
   options,
   value,
   onChange,
-  search,
-  onSearchChange,
-  filterLocally = false,
   isLoading = false,
   error,
   onRetry,
@@ -79,10 +77,23 @@ export function LocationCombobox({
   emptyLabel,
 }: Props) {
   const [open, setOpen] = useState(false)
-  const [localSearch, setLocalSearch] = useState('')
+  const [searchText, setSearchText] = useState('')
 
-  const searchText = search ?? localSearch
-  const setSearchText = onSearchChange ?? setLocalSearch
+  /**
+   * Matching is done here rather than by cmdk so the rendered list can be
+   * capped. cmdk keeps every item mounted and rescores all of them per
+   * keystroke, which the worldwide ASN list (15,077 entries) turns into a
+   * ~3s open and ~1.7s per character. Searching still covers the whole list —
+   * only what is painted is limited.
+   */
+  const matches = searchText
+    ? options.filter((option) =>
+        option.label.toLowerCase().includes(searchText.toLowerCase()),
+      )
+    : options
+
+  const visible = matches.slice(0, MAX_VISIBLE_OPTIONS)
+  const hiddenCount = matches.length - visible.length
 
   // The selected label has to survive a search that no longer returns it, so
   // the chosen option is remembered rather than looked up in the current
@@ -158,7 +169,7 @@ export function LocationCombobox({
           className="border-hairline w-(--anchor-width) min-w-64 p-0"
           align="start"
         >
-          <Command shouldFilter={filterLocally}>
+          <Command shouldFilter={false}>
             <CommandInput
               placeholder={searchPlaceholder}
               value={searchText}
@@ -184,17 +195,19 @@ export function LocationCombobox({
                 <div className="text-ink-muted p-3 text-sm">Loading…</div>
               ) : (
                 <>
-                  <CommandEmpty>{emptyLabel(searchText)}</CommandEmpty>
-                  {options.map((option) => (
+                  {visible.length === 0 ? (
+                    <div className="text-ink-muted p-3 text-sm">
+                      {emptyLabel(searchText)}
+                    </div>
+                  ) : null}
+                  {visible.map((option) => (
                     <CommandItem
                       key={option.value}
                       // cmdk identifies an item by `value`, so this has to be
                       // the unique one (an alias, not a label): two cities can
-                      // share a name, and a duplicate value makes keyboard
-                      // selection pick the wrong row. The label goes in
-                      // `keywords` so typing still matches what is on screen.
+                      // share a name, and a duplicate value would make keyboard
+                      // selection pick the wrong row.
                       value={option.value}
-                      keywords={[option.label]}
                       onSelect={() => handleSelect(option)}
                       className={cn(
                         option.value === value && 'text-brand font-medium',
@@ -208,6 +221,21 @@ export function LocationCombobox({
                       ) : null}
                     </CommandItem>
                   ))}
+
+                  {/*
+                    Silently truncating would read as "that is everything".
+                    Saying how many are left over tells the user that typing
+                    will reach them.
+                  */}
+                  {hiddenCount > 0 ? (
+                    <p
+                      aria-live="polite"
+                      className="text-ink-muted border-hairline border-t px-3 py-2 text-xs"
+                    >
+                      {hiddenCount.toLocaleString()} more — keep typing to
+                      narrow.
+                    </p>
+                  ) : null}
                 </>
               )}
             </CommandList>

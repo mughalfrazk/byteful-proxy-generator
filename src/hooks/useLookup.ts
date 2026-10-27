@@ -76,11 +76,9 @@ export function useCities(countryId: string | undefined): LookupResult<City> {
  * re-narrows whenever the country changes. Loading it up front is what lets the
  * field show "No ASNs available" before the user opens it.
  */
-export function useAsns(
-  countryId: string | undefined,
-  query: string,
-): LookupResult<Asn> {
+export function useAsns(countryId: string | undefined): LookupResult<Asn> {
   return useLookup<Asn>(
-    `/api/lookup/asn${buildQuery({ country_id: countryId, query })}`,
+    `/api/lookup/asn${buildQuery({ country_id: countryId })}`,
+    { revalidateIfStale: false },
   )
 }

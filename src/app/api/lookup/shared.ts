@@ -5,19 +5,11 @@ import { invalidParameter } from '@/lib/errors'
 /** Browser-facing cache window for lookup responses. */
 export const LOOKUP_CACHE_CONTROL = 'public, max-age=300'
 
-export const MAX_QUERY_LENGTH = 100
-
 export const CountryIdSchema = z
   .string({ error: 'country_id is required and must be a two-letter code' })
   .trim()
   .toLowerCase()
   .regex(/^[a-z]{2}$/, 'country_id must be a two-letter country code')
-
-export const QuerySchema = z
-  .string()
-  .trim()
-  .max(MAX_QUERY_LENGTH, `query must be at most ${MAX_QUERY_LENGTH} characters`)
-  .optional()
 
 /**
  * Reads an allowlist of parameters from the URL. Anything else in the query

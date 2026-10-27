@@ -303,8 +303,8 @@ describe('query strings', () => {
     const { searchCities, searchAsns } = await loadClient()
 
     await searchCities({ countryId: 'sg' })
-    expect(String(fetchMock.mock.calls[0][0])).not.toContain(
-      'min_city_node_count',
+    expect(String(fetchMock.mock.calls[0][0])).toContain(
+      'min_city_node_count=1',
     )
 
     await searchAsns({ countryId: 'sg' })
@@ -315,11 +315,40 @@ describe('query strings', () => {
     fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
 
     const { searchAsns } = await loadClient()
-    await searchAsns({ query: 'virgin' })
+    await searchAsns({})
 
-    const url = String(fetchMock.mock.calls[0][0])
-    expect(url).not.toContain('country_id')
-    expect(url).toContain('like_asn_name=%25virgin%25')
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain('country_id')
+  })
+
+  it('never filters ASNs by name upstream', async () => {
+    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
+
+    const { searchAsns } = await loadClient()
+    await searchAsns({ countryId: 'gb' })
+
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain('like_asn_name')
+  })
+
+  it('fetches every page of ASNs, not just the first', async () => {
+    fetchMock.mockImplementation((input: string | URL) => {
+      const page = new URL(String(input)).searchParams.get('page')
+      return jsonResponse({
+        data: [
+          { asn_id: Number(page), asn_name: `AS ${page}`, asn_node_count: 1 },
+        ],
+        page: Number(page),
+        per_page: 1_000,
+        item_count: 1,
+        // 15,077 ASNs have nodes worldwide: sixteen pages.
+        total_count: 15_077,
+      })
+    })
+
+    const { searchAsns } = await loadClient()
+    const asns = await searchAsns({})
+
+    expect(fetchMock).toHaveBeenCalledTimes(16)
+    expect(asns).toHaveLength(16)
   })
 
   it('fetches every page of cities, not just the first', async () => {
@@ -431,18 +460,23 @@ describe('the server-side cache', () => {
     fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
 
     const { searchAsns } = await loadClient()
-    await searchAsns({ countryId: 'gb', query: 'virgin' })
-    await searchAsns({ countryId: 'gb', query: 'virgin' })
+    await searchAsns({ countryId: 'gb' })
+    await searchAsns({ countryId: 'gb' })
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  it('keys on the query, so a different search still goes upstream', async () => {
+  /**
+   * The unfiltered ASN list is the most expensive call the app makes — sixteen
+   * pages — so it must not share a cache entry with any country's list.
+   */
+  it('keys the worldwide ASN list apart from a country ASN list', async () => {
     fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
 
     const { searchAsns } = await loadClient()
-    await searchAsns({ countryId: 'gb', query: 'virgin' })
-    await searchAsns({ countryId: 'gb', query: 'sky' })
+    await searchAsns({})
+    await searchAsns({ countryId: 'gb' })
+    await searchAsns({})
 
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })

@@ -1,16 +1,12 @@
 'use client'
 
-import { useState } from 'react'
 import type { UseFormReturn } from 'react-hook-form'
 
-import { useDebouncedValue } from '@/hooks/useDebouncedValue'
 import { useAsns, useCities, useCountries } from '@/hooks/useLookup'
 import type { ListRequestInput } from '@/lib/models/residential'
 
 import { Field } from './Field'
 import { LocationCombobox, type ComboboxOption } from './LocationCombobox'
-
-const DEBOUNCE_MS = 300
 
 export function TargetingFields({
   form,
@@ -22,38 +18,30 @@ export function TargetingFields({
   const cityAlias = form.watch('city_alias')
   const asnId = form.watch('asn_id')
 
-  // Only the ASN search goes upstream, so only it needs debouncing; cities are
-  // held whole and filtered by the combobox itself.
-  const [asnSearch, setAsnSearch] = useState('')
-  const debouncedAsnSearch = useDebouncedValue(asnSearch, DEBOUNCE_MS)
-
+  // Every list arrives whole and is searched in the browser, so nothing here
+  // is debounced: typing never reaches the network.
   const countries = useCountries()
   const cities = useCities(countryId)
-  const asns = useAsns(countryId, debouncedAsnSearch)
+  const asns = useAsns(countryId)
 
   /**
    * Whether a lookup came back with nothing to offer, which is what lets the
    * field say so up front instead of making the user open an empty list.
    *
-   * Two conditions keep this honest:
+   * Only while no request is in flight, so "not loaded yet" is never mistaken
+   * for "nothing exists". An error is not emptiness either: that case keeps the
+   * field open so the retry button inside it stays reachable.
    *
-   *   - **only while no request is in flight**, so "not loaded yet" is never
-   *     mistaken for "nothing exists";
-   *   - **only when the search box is empty**, so a query that matches nothing
-   *     ("xyz") reports no matches inside the open list rather than disabling
-   *     the field — which would trap the user with no way to clear the search.
-   *     This applies to server-filtered lookups only; a locally filtered list
-   *     is already the complete set, so its caller passes no search.
-   *
-   * An error is not emptiness either: that case keeps the field open so the
-   * retry button inside it stays reachable.
+   * These are complete lists, not filtered ones, so a search that matches
+   * nothing cannot reach here — it is reported inside the open list instead.
    */
-  function isEmptyLookup(
-    lookup: { options: unknown[]; isLoading: boolean; isValidating: boolean; error?: Error },
-    search = '',
-  ): boolean {
+  function isEmptyLookup(lookup: {
+    options: unknown[]
+    isLoading: boolean
+    isValidating: boolean
+    error?: Error
+  }): boolean {
     return (
-      search === '' &&
       !lookup.isLoading &&
       !lookup.isValidating &&
       !lookup.error &&
@@ -62,7 +50,7 @@ export function TargetingFields({
   }
 
   const noCities = Boolean(countryId) && isEmptyLookup(cities)
-  const noAsns = isEmptyLookup(asns, debouncedAsnSearch)
+  const noAsns = isEmptyLookup(asns)
 
   const countryOptions: ComboboxOption[] = countries.options.map((country) => ({
     value: country.id,
@@ -107,7 +95,6 @@ export function TargetingFields({
     form.setValue('country_id', value, { shouldValidate: true })
     form.setValue('city_alias', undefined, { shouldValidate: true })
     form.setValue('asn_id', undefined, { shouldValidate: true })
-    setAsnSearch('')
   }
 
   return (
@@ -126,7 +113,6 @@ export function TargetingFields({
           options={countryOptions}
           value={countryId}
           onChange={handleCountryChange}
-          filterLocally
           isLoading={countries.isLoading}
           error={countries.error}
           onRetry={countries.retry}
@@ -164,9 +150,6 @@ export function TargetingFields({
           onChange={(value) =>
             form.setValue('city_alias', value, { shouldValidate: true })
           }
-          // The whole country's cities are already here, so filtering is local
-          // and instant — no debounce, no round trip per keystroke.
-          filterLocally
           isLoading={cities.isLoading}
           error={cities.error}
           onRetry={cities.retry}
@@ -203,8 +186,6 @@ export function TargetingFields({
               { shouldValidate: true },
             )
           }
-          search={asnSearch}
-          onSearchChange={setAsnSearch}
           isLoading={asns.isLoading}
           error={asns.error}
           onRetry={asns.retry}

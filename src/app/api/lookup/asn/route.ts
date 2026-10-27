@@ -3,26 +3,21 @@ import { z } from 'zod'
 import { searchAsns } from '@/lib/byteful/client'
 import { withErrorHandling } from '@/lib/errors'
 
-import {
-  CountryIdSchema,
-  QuerySchema,
-  lookupResponse,
-  readParams,
-} from '../shared'
+import { CountryIdSchema, lookupResponse, readParams } from '../shared'
 
 const ParamsSchema = z.object({
   country_id: CountryIdSchema.optional(),
-  query: QuerySchema,
 })
 
 /**
- * `GET /api/lookup/asn?country_id=gb&query=virgin`
+ * `GET /api/lookup/asn?country_id=gb`
  *
- * Both parameters are optional. ASN targeting works with or without a country,
- * so the field is usable before a country is picked.
+ * `country_id` is optional: ASN targeting works with or without a country, so
+ * the field is usable before one is picked. Like cities, the full list comes
+ * back and the browser searches it, so there is no `query` parameter.
  */
 export const GET = withErrorHandling(async (request: Request) => {
-  const { country_id, query } = readParams(request, ParamsSchema)
+  const { country_id } = readParams(request, ParamsSchema)
 
-  return lookupResponse(await searchAsns({ countryId: country_id, query }))
+  return lookupResponse(await searchAsns({ countryId: country_id }))
 })

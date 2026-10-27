@@ -52,10 +52,13 @@ yarn build
   does not read as a bug.
 - **Spec defaults over Byteful's real ones**: `http` rather than `standard`,
   and no `_m_general` segment.
-- **Countries and ASNs with no nodes are hidden; cities are not.** Byteful
-  reports `city_node_count: 0` for the only city in some countries that do have
-  nodes (Singapore has 4,798 country nodes and one city, at 0), so a floor there
-  emptied those dropdowns. Every option shows its node count instead.
+- **Anything with no nodes is hidden**, matching Byteful's own dashboard. A few
+  countries whose only city reports zero (Singapore) then offer no city at all;
+  the field says so and targeting the country still works.
+- **Lookups are fetched whole and searched in the browser.** Each list is
+  bounded — 1,191 cities at most per country, 15,077 ASNs worldwide — so the
+  server pages through it once and caches it, and typing never hits the network.
+  The picker paints the first 100 matches and says how many remain.
 - **`city/search` has no country filter.** Passing `country_id` is accepted and
   silently ignored — it returns the whole world. The country lives in
   `subdivision_id` (`gb-lnd`), so the filter is a prefix match:
