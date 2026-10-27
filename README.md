@@ -58,7 +58,8 @@ yarn build
 - **Lookups are fetched whole and searched in the browser.** Each list is
   bounded — 1,191 cities at most per country, 15,077 ASNs worldwide — so the
   server pages through it once and caches it, and typing never hits the network.
-  The picker paints the first 100 matches and says how many remain.
+  The picker paints 100 rows at a time and another 100 each time you reach the
+  bottom, because mounting all 15,077 costs a ~3s open and ~1.7s per keystroke.
 - **`city/search` has no country filter.** Passing `country_id` is accepted and
   silently ignored — it returns the whole world. The country lives in
   `subdivision_id` (`gb-lnd`), so the filter is a prefix match:

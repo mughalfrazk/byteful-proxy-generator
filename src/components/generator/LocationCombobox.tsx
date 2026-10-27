@@ -20,11 +20,14 @@ import { cn } from '@/lib/utils'
 import { CONTROL_CLASS } from './Field'
 
 /**
- * How many rows are painted at once. Enough that the untyped list looks
- * complete for every country, small enough that opening and typing stay
- * instant on the worldwide ASN list.
+ * How many more rows each scroll to the bottom paints. Small enough that
+ * opening and typing stay instant on the worldwide ASN list, large enough that
+ * most lists arrive complete in one page.
  */
-const MAX_VISIBLE_OPTIONS = 100
+const OPTIONS_PER_PAGE = 100
+
+/** How close to the bottom counts as "reached it". */
+const SCROLL_THRESHOLD_PX = 160
 
 export type ComboboxOption = {
   value: string
@@ -78,13 +81,14 @@ export function LocationCombobox({
 }: Props) {
   const [open, setOpen] = useState(false)
   const [searchText, setSearchText] = useState('')
+  const [visibleCount, setVisibleCount] = useState(OPTIONS_PER_PAGE)
 
   /**
    * Matching is done here rather than by cmdk so the rendered list can be
-   * capped. cmdk keeps every item mounted and rescores all of them per
-   * keystroke, which the worldwide ASN list (15,077 entries) turns into a
-   * ~3s open and ~1.7s per character. Searching still covers the whole list —
-   * only what is painted is limited.
+   * grown a page at a time. cmdk keeps every item mounted and rescores all of
+   * them per keystroke, which the worldwide ASN list (15,077 entries) turns
+   * into a ~3s open and ~1.7s per character. Searching always covers the whole
+   * list — only how much of it is painted at once is limited.
    */
   const matches = searchText
     ? options.filter((option) =>
@@ -92,8 +96,29 @@ export function LocationCombobox({
       )
     : options
 
-  const visible = matches.slice(0, MAX_VISIBLE_OPTIONS)
-  const hiddenCount = matches.length - visible.length
+  const visible = matches.slice(0, visibleCount)
+  const remaining = matches.length - visible.length
+
+  /**
+   * Reaching the bottom paints the next page, so scrolling walks the entire
+   * list — it is only ever one page ahead of the user. Arrow-key navigation
+   * scrolls the same container, so the keyboard reaches the rest too.
+   */
+  function handleScroll(event: React.UIEvent<HTMLDivElement>) {
+    if (remaining === 0) return
+
+    const { scrollTop, clientHeight, scrollHeight } = event.currentTarget
+    if (scrollHeight - scrollTop - clientHeight < SCROLL_THRESHOLD_PX) {
+      setVisibleCount((count) => count + OPTIONS_PER_PAGE)
+    }
+  }
+
+  function handleSearchChange(next: string) {
+    setSearchText(next)
+    // A new search is a new list; keeping a grown count would paint hundreds of
+    // rows for a query that only needed a handful.
+    setVisibleCount(OPTIONS_PER_PAGE)
+  }
 
   // The selected label has to survive a search that no longer returns it, so
   // the chosen option is remembered rather than looked up in the current
@@ -111,7 +136,10 @@ export function LocationCombobox({
 
   function handleOpenChange(next: boolean) {
     setOpen(next)
-    if (!next) setSearchText('')
+    if (!next) {
+      setSearchText('')
+      setVisibleCount(OPTIONS_PER_PAGE)
+    }
   }
 
   function handleSelect(option: ComboboxOption) {
@@ -173,9 +201,9 @@ export function LocationCombobox({
             <CommandInput
               placeholder={searchPlaceholder}
               value={searchText}
-              onValueChange={setSearchText}
+              onValueChange={handleSearchChange}
             />
-            <CommandList>
+            <CommandList onScroll={handleScroll}>
               {error ? (
                 <div className="p-3 text-sm">
                   <p className="text-red-600">{error.message}</p>
@@ -223,16 +251,15 @@ export function LocationCombobox({
                   ))}
 
                   {/*
-                    Silently truncating would read as "that is everything".
-                    Saying how many are left over tells the user that typing
-                    will reach them.
+                    A list that just stops reads as "that is everything". This
+                    says it is not, and names both ways to get there.
                   */}
-                  {hiddenCount > 0 ? (
+                  {remaining > 0 ? (
                     <p
                       aria-live="polite"
                       className="text-ink-muted border-hairline border-t px-3 py-2 text-xs"
                     >
-                      {hiddenCount.toLocaleString()} more — keep typing to
+                      {remaining.toLocaleString()} more — scroll or type to
                       narrow.
                     </p>
                   ) : null}
