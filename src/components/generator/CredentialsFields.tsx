@@ -26,12 +26,14 @@ export function CredentialsFields({
       <Field
         id="proxy_user_id"
         label="Proxy user ID"
+        required
         error={errors.proxy_user_id?.message}
       >
         <Input
           id="proxy_user_id"
           autoComplete="username"
           placeholder="1_oGDQZ"
+          aria-required
           aria-invalid={Boolean(errors.proxy_user_id)}
           className={cn(CONTROL_CLASS, 'aria-invalid:border-red-500')}
           {...form.register('proxy_user_id')}
@@ -41,6 +43,7 @@ export function CredentialsFields({
       <Field
         id="proxy_user_password"
         label="Password"
+        required
         error={errors.proxy_user_password?.message}
       >
         <div className="relative">
@@ -48,6 +51,7 @@ export function CredentialsFields({
             id="proxy_user_password"
             type={revealed ? 'text' : 'password'}
             autoComplete="current-password"
+            aria-required
             aria-invalid={Boolean(errors.proxy_user_password)}
             className={cn(CONTROL_CLASS, 'aria-invalid:border-red-500 pr-16')}
             {...form.register('proxy_user_password')}

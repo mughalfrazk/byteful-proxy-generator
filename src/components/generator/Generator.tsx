@@ -3,7 +3,7 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import Image from 'next/image'
 import { useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 
 import { Button } from '@/components/ui/button'
 import { postJson } from '@/lib/fetcher'
@@ -45,6 +45,26 @@ export function Generator() {
   })
 
   const { isSubmitting } = form.formState
+
+  /**
+   * The two fields the spec marks required; everything else is optional or has
+   * a default. Watching them directly rather than using `formState.isValid`
+   * keeps the button honest under `mode: 'onBlur'`, where validity is not
+   * recomputed until a field is blurred.
+   *
+   * `proxy_user_id` is trimmed to match the schema. The password is not — the
+   * schema accepts any non-empty string, spaces included.
+   *
+   * `useWatch` rather than `form.watch`: the latter returns a function the
+   * React Compiler cannot memoize, so using it here makes the compiler skip
+   * optimising this whole component.
+   */
+  const [proxyUserId, proxyUserPassword] = useWatch({
+    control: form.control,
+    name: ['proxy_user_id', 'proxy_user_password'],
+  })
+  const hasCredentials =
+    (proxyUserId ?? '').trim().length > 0 && (proxyUserPassword ?? '').length > 0
 
   const onSubmit = form.handleSubmit(async (request) => {
     setResult({ status: 'loading' })
@@ -110,13 +130,29 @@ export function Generator() {
             <TargetingFields form={form} />
           </StepSection>
 
-          <Button
-            type="submit"
-            disabled={isSubmitting}
-            className="bg-brand hover:bg-brand-hover h-11 w-full rounded-lg text-sm font-semibold text-white shadow-xs"
-          >
-            {isSubmitting ? 'Generating…' : 'Generate list'}
-          </Button>
+          <div className="grid gap-2">
+            <Button
+              type="submit"
+              disabled={isSubmitting || !hasCredentials}
+              className="bg-brand hover:bg-brand-hover h-11 w-full rounded-lg text-sm font-semibold text-white shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSubmitting ? 'Generating…' : 'Generate list'}
+            </Button>
+
+            {/*
+              A disabled button on a form that starts empty otherwise hides why
+              nothing happens, so it says what is missing. `aria-live` means a
+              screen reader hears it clear as the fields are filled in.
+            */}
+            {!hasCredentials ? (
+              <p
+                aria-live="polite"
+                className="text-ink-muted text-center text-[12px]"
+              >
+                Enter your proxy user ID and password to generate a list.
+              </p>
+            ) : null}
+          </div>
         </form>
       </aside>
 
