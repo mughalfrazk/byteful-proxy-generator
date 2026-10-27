@@ -54,13 +54,19 @@ export function useCountries(): LookupResult<Country> {
   }
 }
 
-/** The key is `null` until a country is chosen, which keeps SWR from fetching. */
+/**
+ * A `null` key is how SWR is told not to fetch. Both lookups below stay `null`
+ * until the field is `enabled` — the parent turns that on when the dropdown is
+ * first opened — so a targeting field nobody touches costs no upstream request
+ * against the account's shared rate limit.
+ */
 export function useCities(
   countryId: string | undefined,
   query: string,
+  enabled: boolean,
 ): LookupResult<City> {
   return useLookup<City>(
-    countryId
+    enabled && countryId
       ? `/api/lookup/city${buildQuery({ country_id: countryId, query })}`
       : null,
   )
@@ -69,8 +75,11 @@ export function useCities(
 export function useAsns(
   countryId: string | undefined,
   query: string,
+  enabled: boolean,
 ): LookupResult<Asn> {
   return useLookup<Asn>(
-    `/api/lookup/asn${buildQuery({ country_id: countryId, query })}`,
+    enabled
+      ? `/api/lookup/asn${buildQuery({ country_id: countryId, query })}`
+      : null,
   )
 }

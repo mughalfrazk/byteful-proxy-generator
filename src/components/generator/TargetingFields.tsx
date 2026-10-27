@@ -25,12 +25,22 @@ export function TargetingFields({
   const [citySearch, setCitySearch] = useState('')
   const [asnSearch, setAsnSearch] = useState('')
 
+  /**
+   * City and ASN are optional, and most lists are generated without them, so
+   * their lookups wait until the dropdown is first opened. Once opened the flag
+   * stays on, so re-opening or changing country serves from the SWR cache
+   * rather than re-fetching on every toggle. Countries load eagerly: that
+   * dropdown is the entry point to the whole section.
+   */
+  const [cityActive, setCityActive] = useState(false)
+  const [asnActive, setAsnActive] = useState(false)
+
   const debouncedCitySearch = useDebouncedValue(citySearch, DEBOUNCE_MS)
   const debouncedAsnSearch = useDebouncedValue(asnSearch, DEBOUNCE_MS)
 
   const countries = useCountries()
-  const cities = useCities(countryId, debouncedCitySearch)
-  const asns = useAsns(countryId, debouncedAsnSearch)
+  const cities = useCities(countryId, debouncedCitySearch, cityActive)
+  const asns = useAsns(countryId, debouncedAsnSearch, asnActive)
 
   const countryOptions: ComboboxOption[] = countries.options.map((country) => ({
     value: country.id,
@@ -114,6 +124,7 @@ export function TargetingFields({
           // browser and filter there.
           search={citySearch}
           onSearchChange={setCitySearch}
+          onOpenChange={(open) => open && setCityActive(true)}
           isLoading={cities.isLoading}
           error={cities.error}
           onRetry={cities.retry}
@@ -150,6 +161,7 @@ export function TargetingFields({
           }
           search={asnSearch}
           onSearchChange={setAsnSearch}
+          onOpenChange={(open) => open && setAsnActive(true)}
           isLoading={asns.isLoading}
           error={asns.error}
           onRetry={asns.retry}
