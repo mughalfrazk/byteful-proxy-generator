@@ -6,6 +6,11 @@ export type Choice<T extends string> = {
   value: T
   label: string
   hint?: string
+  /**
+   * Renders the label and hint in the mono face, for choices whose value is
+   * literal syntax (a scheme, a URL template) rather than prose.
+   */
+  mono?: boolean
 }
 
 /**
@@ -53,14 +58,25 @@ export function ChoiceGroup<T extends string>({
               checked={selected}
               onChange={() => onChange(choice.value)}
             />
-            <span className={cn('font-medium', !choice.hint && 'font-mono')}>
+            <span className={cn('font-medium', choice.mono && 'font-mono')}>
               {choice.label}
             </span>
             {choice.hint ? (
+              // `truncate` is the safety net: these cards sit in a fixed-width
+              // rail, so a long hint must ellipsize rather than widen the column.
               <span
                 className={cn(
-                  'mt-0.5 text-[12px]',
-                  selected ? 'text-white/75' : 'text-ink-muted',
+                  'mt-0.5 truncate',
+                  choice.mono
+                    ? 'font-mono text-[10px] tracking-tight'
+                    : 'text-[12px]',
+                  // The mono hint is smaller, so it gets a little more contrast
+                  // back to stay legible on the selected card.
+                  selected
+                    ? choice.mono
+                      ? 'text-white/80'
+                      : 'text-white/75'
+                    : 'text-ink-muted/70',
                 )}
               >
                 {choice.hint}

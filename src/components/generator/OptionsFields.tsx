@@ -19,9 +19,18 @@ import { CONTROL_CLASS, Field, FieldNote } from './Field'
 /**
  * `list_format` is the proxy **protocol**, not a line layout: the generated
  * line is always `<format>://<username>:<password>@host:port`.
+ *
+ * Each card carries that shape as a hint, derived from the format rather than
+ * written out per option, so the preview cannot drift from what the format
+ * actually produces.
  */
 const FORMAT_CHOICES: ReadonlyArray<Choice<ListFormat>> = LIST_FORMATS.map(
-  (format) => ({ value: format, label: format }),
+  (format) => ({
+    value: format,
+    label: format,
+    hint: `${format}://username:password@ip:port`,
+    mono: true,
+  }),
 )
 
 const SESSION_CHOICES: ReadonlyArray<Choice<ListSessionType>> = [
