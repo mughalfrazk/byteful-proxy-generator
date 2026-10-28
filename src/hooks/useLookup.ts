@@ -2,19 +2,12 @@
 
 import useSWR, { type SWRConfiguration } from 'swr'
 
-import type { Asn, City, Country } from '@/lib/models'
-
-type LookupResponse<T> = { data: T[] }
+import type { Asn, City, Country, LookupResponse } from '@/lib/models'
 
 export type LookupResult<T> = {
   options: T[]
   isLoading: boolean
-  /**
-   * True while any request for this lookup is in flight, including a
-   * revalidation that is serving stale data. Callers deciding whether a list is
-   * genuinely empty must wait for this to settle, otherwise they would read
-   * "no options yet" as "no options exist".
-   */
+  /** Any request in flight, including revalidation. Wait for it before calling a list empty. */
   isValidating: boolean
   error: Error | undefined
   retry: () => void
@@ -30,14 +23,17 @@ function buildQuery(params: Record<string, string | number | undefined>) {
   return qs ? `?${qs}` : ''
 }
 
-/** A `null` key is how SWR is told not to fetch. */
+/**
+ * A `null` key skips the fetch. No `keepPreviousData`: it would offer the
+ * previous country's cities while the new ones load (France + Berlin).
+ */
 function useLookup<T>(
   key: string | null,
   config?: SWRConfiguration<LookupResponse<T>>,
 ): LookupResult<T> {
   const { data, error, isLoading, isValidating, mutate } = useSWR<
     LookupResponse<T>
-  >(key, { keepPreviousData: true, ...config })
+  >(key, config)
 
   return {
     options: data?.data ?? [],
@@ -48,20 +44,14 @@ function useLookup<T>(
   }
 }
 
-/**
- * Countries load once and are filtered in the browser, so revalidating a
- * stale cache entry would only cause a flicker for data that barely changes.
- */
+/** Loaded once and filtered in the browser. */
 export function useCountries(): LookupResult<Country> {
   return useLookup<Country>('/api/lookup/country', {
     revalidateIfStale: false,
   })
 }
 
-/**
- * Every city in the country, fetched once per country and filtered in the
- * browser. Without a country there is nothing to fetch, so the key is `null`.
- */
+/** Loaded once per country and filtered in the browser. */
 export function useCities(countryId: string | undefined): LookupResult<City> {
   return useLookup<City>(
     countryId
@@ -71,14 +61,13 @@ export function useCities(countryId: string | undefined): LookupResult<City> {
   )
 }
 
-/**
- * ASN targeting works with or without a country, so this loads on mount and
- * re-narrows whenever the country changes. Loading it up front is what lets the
- * field show "No ASNs available" before the user opens it.
- */
-export function useAsns(countryId: string | undefined): LookupResult<Asn> {
+/** Works without a country, so it loads on mount and narrows to the country or city. */
+export function useAsns(
+  countryId: string | undefined,
+  cityId: number | undefined,
+): LookupResult<Asn> {
   return useLookup<Asn>(
-    `/api/lookup/asn${buildQuery({ country_id: countryId })}`,
+    `/api/lookup/asn${buildQuery({ country_id: countryId, city_id: cityId })}`,
     { revalidateIfStale: false },
   )
 }

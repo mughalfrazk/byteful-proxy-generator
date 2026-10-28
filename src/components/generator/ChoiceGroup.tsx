@@ -6,21 +6,11 @@ export type Choice<T extends string> = {
   value: T
   label: string
   hint?: string
-  /**
-   * Renders the label and hint in the mono face, for choices whose value is
-   * literal syntax (a scheme, a URL template) rather than prose.
-   */
+  /** Monospace label and hint, for literal syntax such as a URL scheme. */
   mono?: boolean
 }
 
-/**
- * A stack (or pair) of selectable cards — the blue-when-chosen control from
- * the design.
- *
- * It wraps real `<input type="radio">` elements rather than buttons with
- * `role="radio"`: that gets arrow-key navigation, the roving tab stop and
- * form semantics from the browser instead of from hand-written key handlers.
- */
+/** Selectable cards backed by real radio inputs, for native keyboard support. */
 export function ChoiceGroup<T extends string>({
   name,
   value,
@@ -62,16 +52,12 @@ export function ChoiceGroup<T extends string>({
               {choice.label}
             </span>
             {choice.hint ? (
-              // `truncate` is the safety net: these cards sit in a fixed-width
-              // rail, so a long hint must ellipsize rather than widen the column.
               <span
                 className={cn(
                   'mt-0.5 truncate',
                   choice.mono
                     ? 'font-mono text-[10px] tracking-tight'
                     : 'text-[12px]',
-                  // The mono hint is smaller, so it gets a little more contrast
-                  // back to stay legible on the selected card.
                   selected
                     ? choice.mono
                       ? 'text-white/80'

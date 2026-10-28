@@ -14,11 +14,8 @@ export type ResultState =
   | { status: 'error'; message: string }
   | { status: 'success'; proxies: string[]; request: ListRequest }
 
-/**
- * A generated list is never empty, because `list_count` is at least 1. The
- * spec's "empty result" state is therefore the idle one — nothing generated
- * yet — and a separate empty branch would be dead code.
- */
+// A generated list is never empty (`list_count` >= 1), so "idle" is the empty state.
+
 function buildFilename(request: ListRequest): string {
   const parts = [
     'byteful',
@@ -37,20 +34,22 @@ const ACTION_CLASS =
 
 export function ResultPanel({
   state,
+  isStale = false,
   onRetry,
 }: {
   state: ResultState
+  /** The form has changed since this list was generated. */
+  isStale?: boolean
   onRetry: () => void
 }) {
   const [copied, setCopied] = useState(false)
-  /**
-   * The clipboard can refuse: it needs a secure context, and the permission
-   * can be denied. Saying so beats a button that silently does nothing — the
-   * list is still on screen and selectable.
-   */
-  const [actionError, setActionError] = useState<string | null>(null)
+  // Keyed to the list it failed for, so a new list hides it without an effect.
+  const [actionError, setActionError] = useState<{
+    proxies: string[]
+    message: string
+  } | null>(null)
 
-  async function handleCopy(text: string) {
+  async function handleCopy(proxies: string[], text: string) {
     try {
       await navigator.clipboard.writeText(text)
       setActionError(null)
@@ -58,9 +57,11 @@ export function ResultPanel({
       setTimeout(() => setCopied(false), 2_000)
     } catch {
       setCopied(false)
-      setActionError(
-        'Could not copy to the clipboard. Select the list and copy it manually.',
-      )
+      setActionError({
+        proxies,
+        message:
+          'Could not copy to the clipboard. Select the list and copy it manually.',
+      })
     }
   }
 
@@ -72,9 +73,8 @@ export function ResultPanel({
     anchor.href = url
     anchor.download = filename
 
-    // The anchor has to be in the document for the click to count in Firefox,
-    // and the object URL has to outlive the click — revoking it synchronously
-    // races the browser starting the download.
+    // Firefox needs the anchor in the document; revoking synchronously races
+    // the download.
     document.body.append(anchor)
     anchor.click()
     anchor.remove()
@@ -138,14 +138,20 @@ export function ResultPanel({
   return (
     <Shell
       title="Generated proxy list"
-      meta={`${lines.toLocaleString()} ${lines === 1 ? 'line' : 'lines'} ready`}
-      badge={<Badge tone="success">Success</Badge>}
+      meta={`${lines.toLocaleString()} ${lines === 1 ? 'proxy' : 'proxies'} ready`}
+      badge={
+        isStale ? (
+          <Badge tone="stale">Outdated</Badge>
+        ) : (
+          <Badge tone="success">Success</Badge>
+        )
+      }
       actions={
         <>
           <Button
             type="button"
             variant="outline"
-            onClick={() => handleCopy(text)}
+            onClick={() => handleCopy(state.proxies, text)}
             className={ACTION_CLASS}
           >
             {copied ? (
@@ -167,9 +173,19 @@ export function ResultPanel({
         </>
       }
     >
-      {actionError ? (
+      {isStale ? (
+        <p
+          role="status"
+          className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800"
+        >
+          The options have changed since this list was generated. Press{' '}
+          <span className="font-medium">Generate list</span> to update it.
+        </p>
+      ) : null}
+
+      {actionError?.proxies === state.proxies ? (
         <p role="alert" className="mb-3 text-[13px] text-red-600">
-          {actionError}
+          {actionError.message}
         </p>
       ) : null}
 
@@ -225,7 +241,7 @@ function Badge({
   tone,
   children,
 }: {
-  tone: 'success' | 'failed' | 'busy'
+  tone: 'success' | 'failed' | 'busy' | 'stale'
   children: ReactNode
 }) {
   return (
@@ -235,6 +251,7 @@ function Badge({
         tone === 'success' && 'bg-green-100 text-green-800',
         tone === 'failed' && 'bg-red-100 text-red-700',
         tone === 'busy' && 'bg-ink/5 text-ink-muted',
+        tone === 'stale' && 'bg-amber-100 text-amber-800',
       )}
     >
       {children}

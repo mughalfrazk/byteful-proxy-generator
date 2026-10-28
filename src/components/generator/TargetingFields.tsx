@@ -1,12 +1,25 @@
 'use client'
 
-import type { UseFormReturn } from 'react-hook-form'
+import { useEffect, useState } from 'react'
+import { useWatch, type UseFormReturn } from 'react-hook-form'
 
-import { useAsns, useCities, useCountries } from '@/hooks/useLookup'
+import {
+  useAsns,
+  useCities,
+  useCountries,
+  type LookupResult,
+} from '@/hooks/useLookup'
+import { RequestError } from '@/lib/fetcher'
+import { formatNodeCount } from '@/lib/format'
 import type { ListRequestInput } from '@/lib/models/residential'
 
 import { Field } from './Field'
 import { LocationCombobox, type ComboboxOption } from './LocationCombobox'
+
+/** A missing or rejected API key won't fix itself, so it gets no Retry. */
+function canRetry(error: Error): boolean {
+  return !(error instanceof RequestError && error.code === 'server_misconfigured')
+}
 
 export function TargetingFields({
   form,
@@ -14,27 +27,21 @@ export function TargetingFields({
   form: UseFormReturn<ListRequestInput, unknown, unknown>
 }) {
   const { errors } = form.formState
-  const countryId = form.watch('country_id')
-  const cityAlias = form.watch('city_alias')
-  const asnId = form.watch('asn_id')
+  const [countryId, cityAlias, asnId] = useWatch({
+    control: form.control,
+    name: ['country_id', 'city_alias', 'asn_id'],
+  })
 
-  // Every list arrives whole and is searched in the browser, so nothing here
-  // is debounced: typing never reaches the network.
+  // Lists arrive whole and are searched in the browser, so typing never
+  // reaches the network and needs no debounce.
   const countries = useCountries()
   const cities = useCities(countryId)
-  const asns = useAsns(countryId)
 
-  /**
-   * Whether a lookup came back with nothing to offer, which is what lets the
-   * field say so up front instead of making the user open an empty list.
-   *
-   * Only while no request is in flight, so "not loaded yet" is never mistaken
-   * for "nothing exists". An error is not emptiness either: that case keeps the
-   * field open so the retry button inside it stays reachable.
-   *
-   * These are complete lists, not filtered ones, so a search that matches
-   * nothing cannot reach here — it is reported inside the open list instead.
-   */
+  // The form holds the alias; the ASN lookup needs the `city_id`.
+  const cityId = cities.options.find((city) => city.alias === cityAlias)?.id
+  const asns = useAsns(countryId, cityId)
+
+  // Settled and empty. Not on error, so the retry button stays reachable.
   function isEmptyLookup(lookup: {
     options: unknown[]
     isLoading: boolean
@@ -49,6 +56,22 @@ export function TargetingFields({
     )
   }
 
+  // One line on the field: what failed and what to do. The open list shows
+  // the server's detail and the Retry button.
+  function lookupError(
+    lookup: { error?: Error },
+    what: string,
+  ): string | undefined {
+    if (!lookup.error) return undefined
+    return canRetry(lookup.error)
+      ? `Couldn't load ${what}. Retry from the list.`
+      : `Couldn't load ${what}. The server is not set up correctly; contact the administrator.`
+  }
+
+  function retryFor(lookup: LookupResult<unknown>): (() => void) | undefined {
+    return lookup.error && !canRetry(lookup.error) ? undefined : lookup.retry
+  }
+
   const noCities = Boolean(countryId) && isEmptyLookup(cities)
   const noAsns = isEmptyLookup(asns)
 
@@ -58,12 +81,7 @@ export function TargetingFields({
     nodeCount: country.nodeCount,
   }))
 
-  /**
-   * City names are not unique inside a country: the US has an Albany in NY, GA
-   * and OR. Three identical rows would be a coin toss, so the subdivision is
-   * appended — but only to the names that actually repeat, since most countries
-   * have none and a code on every row is noise ("Tokyo (13)").
-   */
+  // Repeated names (Albany NY, GA, OR) get their subdivision; others stay bare.
   const duplicateCityNames = new Set(
     cities.options
       .map((city) => city.name)
@@ -81,20 +99,60 @@ export function TargetingFields({
 
   const asnOptions: ComboboxOption[] = asns.options.map((asn) => ({
     value: String(asn.id),
-    label: `AS${asn.id} — ${asn.name}`,
+    label: asn.name,
+    // `AS7922` is how ASNs are usually written; `7922` still matches it.
+    detail: `AS${asn.id}`,
     nodeCount: asn.nodeCount,
   }))
 
-  /**
-   * Changing or clearing the country invalidates both dependent selections, so
-   * they are cleared here rather than left to go stale. A city alias from the
-   * previous country would otherwise still be in the form when it is no longer
-   * a valid combination.
-   */
+  const asnNodeTotal = asns.options.reduce((sum, asn) => sum + asn.nodeCount, 0)
+
+  // The ASN the user picked. The form holds it only while the country and
+  // city offer it: picking Starlink and then Liberia keeps it, and a country
+  // without it leaves it out with a note. While the list loads, it stays.
+  const [pickedAsn, setPickedAsn] = useState<number>()
+  const asnUnavailable =
+    pickedAsn !== undefined &&
+    !asns.isLoading &&
+    !asns.isValidating &&
+    !asns.error &&
+    !asns.options.some((asn) => asn.id === pickedAsn)
+  const effectiveAsn = asnUnavailable ? undefined : pickedAsn
+
+  // The form is the request, so it follows the pick.
+  useEffect(() => {
+    if (form.getValues('asn_id') === effectiveAsn) return
+    form.setValue('asn_id', effectiveAsn, { shouldValidate: true })
+  }, [effectiveAsn, form])
+
+  // A new country invalidates the city picked for the old one.
   function handleCountryChange(value: string | undefined) {
     form.setValue('country_id', value, { shouldValidate: true })
     form.setValue('city_alias', undefined, { shouldValidate: true })
-    form.setValue('asn_id', undefined, { shouldValidate: true })
+  }
+
+  function handleCityChange(value: string | undefined) {
+    form.setValue('city_alias', value, { shouldValidate: true })
+  }
+
+  function handleAsnChange(value: string | undefined) {
+    setPickedAsn(value === undefined ? undefined : Number(value))
+  }
+
+  function asnDescription(): string {
+    const area = cityAlias ? 'city' : 'country'
+
+    if (asnUnavailable) {
+      return `AS${pickedAsn} has no nodes in this ${area}, so it is left out. Pick another ASN or change the ${area}.`
+    }
+    if (noAsns) {
+      return cityAlias
+        ? 'No ASNs for this city. Clear the city to see the whole country.'
+        : 'No ASNs for this country. Clear the country to search all ASNs.'
+    }
+    if (cityAlias) return 'Limited to the selected city.'
+    if (countryId) return 'Limited to the selected country.'
+    return 'Works with or without a country.'
   }
 
   return (
@@ -102,8 +160,8 @@ export function TargetingFields({
       <Field
         id="country_id"
         label="Country"
-        error={errors.country_id?.message}
-        description="Countries with no available nodes are hidden."
+        error={errors.country_id?.message ?? lookupError(countries, 'countries')}
+        description="Countries with available nodes."
       >
         <LocationCombobox
           id="country_id"
@@ -115,7 +173,7 @@ export function TargetingFields({
           onChange={handleCountryChange}
           isLoading={countries.isLoading}
           error={countries.error}
-          onRetry={countries.retry}
+          onRetry={retryFor(countries)}
           emptyLabel={(search) =>
             search ? `No countries match “${search}”` : 'No countries available'
           }
@@ -125,7 +183,7 @@ export function TargetingFields({
       <Field
         id="city_alias"
         label="City"
-        error={errors.city_alias?.message}
+        error={errors.city_alias?.message ?? lookupError(cities, 'cities')}
         description={
           !countryId
             ? 'Choose a country first.'
@@ -147,12 +205,10 @@ export function TargetingFields({
           searchPlaceholder="Search cities…"
           options={cityOptions}
           value={cityAlias}
-          onChange={(value) =>
-            form.setValue('city_alias', value, { shouldValidate: true })
-          }
+          onChange={handleCityChange}
           isLoading={cities.isLoading}
           error={cities.error}
-          onRetry={cities.retry}
+          onRetry={retryFor(cities)}
           disabled={!countryId || noCities}
           emptyLabel={(search) =>
             search ? `No cities match “${search}”` : 'No cities available'
@@ -163,14 +219,12 @@ export function TargetingFields({
       <Field
         id="asn_id"
         label="ASN"
-        error={errors.asn_id?.message}
-        description={
-          noAsns
-            ? 'No ASNs for this country. Clear the country to search all ASNs.'
-            : countryId
-              ? 'Limited to the selected country.'
-              : 'Works with or without a country.'
+        // Hidden while loading or failed, so it never reads as a real 0.
+        labelChip={
+          asnNodeTotal > 0 ? formatNodeCount(asnNodeTotal) : undefined
         }
+        error={errors.asn_id?.message ?? lookupError(asns, 'ASNs')}
+        description={asnDescription()}
       >
         <LocationCombobox
           id="asn_id"
@@ -179,16 +233,10 @@ export function TargetingFields({
           searchPlaceholder="Search ASNs…"
           options={asnOptions}
           value={asnId === undefined ? undefined : String(asnId)}
-          onChange={(value) =>
-            form.setValue(
-              'asn_id',
-              value === undefined ? undefined : Number(value),
-              { shouldValidate: true },
-            )
-          }
+          onChange={handleAsnChange}
           isLoading={asns.isLoading}
           error={asns.error}
-          onRetry={asns.retry}
+          onRetry={retryFor(asns)}
           disabled={noAsns}
           emptyLabel={(search) =>
             search ? `No ASNs match “${search}”` : 'No ASNs available'

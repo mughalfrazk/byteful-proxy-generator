@@ -21,17 +21,15 @@ import { ResultPanel, type ResultState } from './ResultPanel'
 import { StepSection } from './StepSection'
 import { TargetingFields } from './TargetingFields'
 
-/**
- * Owns the one form instance. The resolver uses `ListRequestSchema` — the same
- * schema the API route validates with — so the client cannot accept a request
- * the server would reject, or reject one it would accept.
- */
+/** Owns the form. It validates with the same schema as the API route. */
 export function Generator() {
   const [result, setResult] = useState<ResultState>({ status: 'idle' })
 
   const form = useForm<ListRequestInput, unknown, ListRequest>({
     resolver: zodResolver(ListRequestSchema),
-    mode: 'onBlur',
+    // Validate on first blur, then on every change, so errors clear as soon
+    // as the value is fixed.
+    mode: 'onTouched',
     defaultValues: {
       proxy_user_id: '',
       proxy_user_password: '',
@@ -46,28 +44,28 @@ export function Generator() {
 
   const { isSubmitting } = form.formState
 
-  /**
-   * The two fields the spec marks required; everything else is optional or has
-   * a default. Watching them directly rather than using `formState.isValid`
-   * keeps the button honest under `mode: 'onBlur'`, where validity is not
-   * recomputed until a field is blurred.
-   *
-   * `proxy_user_id` is trimmed to match the schema. The password is not — the
-   * schema accepts any non-empty string, spaces included.
-   *
-   * `useWatch` rather than `form.watch`: the latter returns a function the
-   * React Compiler cannot memoize, so using it here makes the compiler skip
-   * optimising this whole component.
-   */
+  // Watched directly: under `onTouched`, `formState.isValid` ignores fields
+  // that have not been blurred yet.
   const [proxyUserId, proxyUserPassword] = useWatch({
     control: form.control,
     name: ['proxy_user_id', 'proxy_user_password'],
   })
-  const hasCredentials =
-    (proxyUserId ?? '').trim().length > 0 && (proxyUserPassword ?? '').length > 0
+  const hasCredentials = Boolean(proxyUserId) && Boolean(proxyUserPassword)
+  const credentialsValid =
+    ListRequestSchema.shape.proxy_user_id.safeParse(proxyUserId).success &&
+    ListRequestSchema.shape.proxy_user_password.safeParse(proxyUserPassword)
+      .success
+
+  // The values the shown list came from, so editing the form afterwards marks
+  // the list as outdated.
+  const [generatedFrom, setGeneratedFrom] = useState<string | null>(null)
+  const values = useWatch({ control: form.control })
+  const isStale =
+    result.status === 'success' && generatedFrom !== JSON.stringify(values)
 
   const onSubmit = form.handleSubmit(async (request) => {
     setResult({ status: 'loading' })
+    setGeneratedFrom(JSON.stringify(form.getValues()))
 
     try {
       const response = await postJson<ListResponse>(
@@ -88,17 +86,9 @@ export function Generator() {
 
   return (
     <div className="flex min-h-screen flex-col lg:flex-row">
-      {/*
-        The rail scrolls on its own from `lg` up, so the result stays in view
-        while the form is filled in. Below `lg` the two stack and the page
-        scrolls normally.
-      */}
+      {/* From `lg` up the form scrolls on its own, keeping the result in view. */}
       <aside className="bg-panel border-hairline w-full shrink-0 border-b px-7 py-9 lg:sticky lg:top-0 lg:h-screen lg:w-[25rem] lg:overflow-y-auto lg:border-r lg:border-b-0">
         <header>
-          {/*
-            The logo carries the "Byteful" wordmark, so the heading below names
-            the tool rather than repeating the brand.
-          */}
           <Image
             src="/byteful-logo.webp"
             alt="Byteful"
@@ -133,31 +123,34 @@ export function Generator() {
           <div className="grid gap-2">
             <Button
               type="submit"
-              disabled={isSubmitting || !hasCredentials}
+              disabled={isSubmitting || !credentialsValid}
               className="bg-brand hover:bg-brand-hover h-11 w-full rounded-lg text-sm font-semibold text-white shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isSubmitting ? 'Generating…' : 'Generate list'}
             </Button>
 
-            {/*
-              A disabled button on a form that starts empty otherwise hides why
-              nothing happens, so it says what is missing. `aria-live` means a
-              screen reader hears it clear as the fields are filled in.
-            */}
-            {!hasCredentials ? (
+            {/* Says why the button is disabled. */}
+            {!credentialsValid ? (
               <p
                 aria-live="polite"
                 className="text-ink-muted text-center text-[12px]"
               >
-                Enter your proxy user ID and password to generate a list.
+                {hasCredentials
+                  ? 'Your proxy user ID and password can only contain letters and numbers.'
+                  : 'Enter your proxy user ID and password to generate a list.'}
               </p>
             ) : null}
           </div>
         </form>
       </aside>
 
-      <main className="bg-canvas flex-1 px-6 py-9 sm:px-10 lg:px-12">
-        <ResultPanel state={result} onRetry={() => void onSubmit()} />
+      {/* `min-w-0` lets the flex item shrink below its content's width. */}
+      <main className="bg-canvas min-w-0 flex-1 px-6 py-9 sm:px-10 lg:px-12">
+        <ResultPanel
+          state={result}
+          isStale={isStale}
+          onRetry={() => void onSubmit()}
+        />
       </main>
     </div>
   )

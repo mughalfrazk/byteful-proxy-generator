@@ -1,13 +1,8 @@
 import type { ReactNode } from 'react'
 
 import { Label } from '@/components/ui/label'
-import { cn } from '@/lib/utils'
 
-/**
- * The shared look for every control in the form rail: a white box with a
- * hairline border that turns blue on focus. Kept as one constant so the
- * inputs, the number field and the combobox triggers cannot drift apart.
- */
+/** Shared styling for every input and combobox trigger in the form. */
 export const CONTROL_CLASS =
   'border-hairline text-ink placeholder:text-ink-muted/70 h-10 w-full rounded-lg border bg-white px-3 text-sm shadow-none transition-colors focus-visible:border-brand focus-visible:ring-[3px] focus-visible:ring-brand/15'
 
@@ -15,6 +10,7 @@ export function Field({
   id,
   label,
   labelHint,
+  labelChip,
   required = false,
   description,
   error,
@@ -24,6 +20,8 @@ export function Field({
   label: string
   /** Muted text beside the label, e.g. "(max 1000)". */
   labelHint?: string
+  /** A small pill after the label, e.g. how many options there are. */
+  labelChip?: ReactNode
   /** Marks the field with an asterisk. The control carries `aria-required`. */
   required?: boolean
   description?: ReactNode
@@ -33,12 +31,7 @@ export function Field({
   return (
     <div className="grid min-w-0 gap-2">
       <Label htmlFor={id} className="text-ink gap-1.5 text-[13px] font-medium">
-        {/*
-          The asterisk sits inside the label's own span so the flex gap stays
-          between the label and its hint, not between the word and the mark.
-          It is decorative: `aria-required` on the control is what a screen
-          reader announces.
-        */}
+        {/* Decorative; the control's `aria-required` is what is announced. */}
         <span>
           {label}
           {required ? (
@@ -50,12 +43,18 @@ export function Field({
         {labelHint ? (
           <span className="text-ink-muted font-normal">{labelHint}</span>
         ) : null}
+        {labelChip ? (
+          <span className="bg-ink/5 text-ink-muted rounded-full px-2 py-0.5 text-[11px] font-medium tabular-nums">
+            {labelChip}
+          </span>
+        ) : null}
       </Label>
 
       {children}
 
       {error ? (
-        <p role="alert" className="text-[12px] text-red-600">
+        // Schema messages have no field name; the label supplies it.
+        <p role="alert" className="text-[12px] text-red-600 first-letter:uppercase">
           {error}
         </p>
       ) : description ? (
@@ -66,21 +65,6 @@ export function Field({
 }
 
 /** A field-level note that stands alongside, not instead of, the description. */
-export function FieldNote({
-  tone = 'muted',
-  children,
-}: {
-  tone?: 'muted' | 'warning'
-  children: ReactNode
-}) {
-  return (
-    <p
-      className={cn(
-        'text-[12px]',
-        tone === 'warning' ? 'text-amber-700' : 'text-ink-muted',
-      )}
-    >
-      {children}
-    </p>
-  )
+export function FieldNote({ children }: { children: ReactNode }) {
+  return <p className="text-ink-muted text-[12px]">{children}</p>
 }

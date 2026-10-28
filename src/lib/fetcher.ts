@@ -13,10 +13,7 @@ export class RequestError extends Error {
   }
 }
 
-/**
- * Turns any non-OK response into a `RequestError` whose message is the one the
- * API wrote. The UI renders that message, so it never has to branch on codes.
- */
+/** Turns a non-OK response into a `RequestError` with the API's message. */
 async function toRequestError(response: Response): Promise<RequestError> {
   let code = 'internal_error'
   let message = 'Something went wrong. Try again.'
@@ -34,20 +31,49 @@ async function toRequestError(response: Response): Promise<RequestError> {
   return new RequestError(code, message, response.status)
 }
 
+/** Replaces the browser's "Failed to fetch" with an actionable message. */
+async function send(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init)
+  } catch {
+    throw new RequestError(
+      'network_error',
+      'Could not reach the server. Check your connection and try again.',
+      0,
+    )
+  }
+}
+
+/**
+ * A 200 that isn't JSON comes from something in between, such as a Wi-Fi
+ * login page; the parser's own message would mean nothing to the user.
+ */
+async function readJson<T>(response: Response): Promise<T> {
+  try {
+    return (await response.json()) as T
+  } catch {
+    throw new RequestError(
+      'internal_error',
+      'Something went wrong. Try again.',
+      response.status,
+    )
+  }
+}
+
 /** The SWR fetcher: GET, parse, throw the API's message on failure. */
 export async function fetcher<T>(url: string): Promise<T> {
-  const response = await fetch(url)
+  const response = await send(url)
   if (!response.ok) throw await toRequestError(response)
-  return (await response.json()) as T
+  return readJson<T>(response)
 }
 
 export async function postJson<T>(url: string, body: unknown): Promise<T> {
-  const response = await fetch(url, {
+  const response = await send(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
 
   if (!response.ok) throw await toRequestError(response)
-  return (await response.json()) as T
+  return readJson<T>(response)
 }

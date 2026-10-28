@@ -15,34 +15,55 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
+import { formatNodeCount } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import { CONTROL_CLASS } from './Field'
 
-/**
- * How many more rows each scroll to the bottom paints. Small enough that
- * opening and typing stay instant on the worldwide ASN list, large enough that
- * most lists arrive complete in one page.
- */
+/** Rows painted per page, so the ~13,500 worldwide ASNs open instantly. */
 const OPTIONS_PER_PAGE = 100
 
-/** How close to the bottom counts as "reached it". */
-const SCROLL_THRESHOLD_PX = 160
+/** Load the next page this far before the bottom, so scrolling never stalls. */
+const SCROLL_THRESHOLD_PX = 600
 
 export type ComboboxOption = {
   value: string
   label: string
+  /** Muted, bracketed text after the label (an ASN number); also searched. */
+  detail?: string
   nodeCount?: number
+}
+
+function searchableText(option: ComboboxOption): string {
+  return option.detail ? `${option.label} ${option.detail}` : option.label
+}
+
+/** Folds case and accents, so `sao paulo` finds São Paulo. */
+function normalize(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase()
+}
+
+function OptionText({ option }: { option: ComboboxOption }) {
+  return (
+    <>
+      {option.label}
+      {option.detail ? (
+        <span className="text-ink-muted font-normal"> ({option.detail})</span>
+      ) : null}
+    </>
+  )
 }
 
 type Props = {
   id: string
-  /** Used for the clear button's accessible name. */
+  /** For the clear button's accessible name. */
   label: string
   placeholder: string
   searchPlaceholder: string
   options: ComboboxOption[]
-  /** The selected value, i.e. what the form holds. */
   value: string | undefined
   onChange: (value: string | undefined) => void
   isLoading?: boolean
@@ -53,17 +74,8 @@ type Props = {
 }
 
 /**
- * A select with a search box, not a free-text input.
- *
- * The distinction matters for correctness, not only for looks:
- *
- *   - **Only `onSelect` writes to the form field.** Typing never does.
- *   - **Unselected text is discarded**: closing the popover clears the search
- *     and the trigger falls back to the selected option's label.
- *
- * Together those mean the only values that can reach
- * `POST /api/residential/list` from this page are ones that came back from a
- * lookup for the country currently selected.
+ * A select with a search box, not a free-text input: only picking an option
+ * writes to the form, so only values from a lookup can be submitted.
  */
 export function LocationCombobox({
   id,
@@ -83,27 +95,19 @@ export function LocationCombobox({
   const [searchText, setSearchText] = useState('')
   const [visibleCount, setVisibleCount] = useState(OPTIONS_PER_PAGE)
 
-  /**
-   * Matching is done here rather than by cmdk so the rendered list can be
-   * grown a page at a time. cmdk keeps every item mounted and rescores all of
-   * them per keystroke, which the worldwide ASN list (15,077 entries) turns
-   * into a ~3s open and ~1.7s per character. Searching always covers the whole
-   * list — only how much of it is painted at once is limited.
-   */
-  const matches = searchText
+  // Filtered here, not by cmdk, which mounts and rescores every item: ~3s to
+  // open the worldwide ASN list. Search covers all of it; only painting pages.
+  const query = normalize(searchText.trim())
+  const matches = query
     ? options.filter((option) =>
-        option.label.toLowerCase().includes(searchText.toLowerCase()),
+        normalize(searchableText(option)).includes(query),
       )
     : options
 
   const visible = matches.slice(0, visibleCount)
   const remaining = matches.length - visible.length
 
-  /**
-   * Reaching the bottom paints the next page, so scrolling walks the entire
-   * list — it is only ever one page ahead of the user. Arrow-key navigation
-   * scrolls the same container, so the keyboard reaches the rest too.
-   */
+  // Arrow keys scroll the same container, so the keyboard pages too.
   function handleScroll(event: React.UIEvent<HTMLDivElement>) {
     if (remaining === 0) return
 
@@ -115,24 +119,18 @@ export function LocationCombobox({
 
   function handleSearchChange(next: string) {
     setSearchText(next)
-    // A new search is a new list; keeping a grown count would paint hundreds of
-    // rows for a query that only needed a handful.
     setVisibleCount(OPTIONS_PER_PAGE)
   }
 
-  // The selected label has to survive a search that no longer returns it, so
-  // the chosen option is remembered rather than looked up in the current
-  // options. It is stored with its value, so when the parent clears or changes
-  // the field the remembered label stops matching and falls away on its own —
-  // no effect needed to reset it.
+  // Keeps the trigger label when the options no longer contain the selection.
+  // Stored with its value, so it drops out when the parent changes the field.
   const [lastSelected, setLastSelected] = useState<ComboboxOption | null>(null)
 
   const remembered =
     value !== undefined && lastSelected?.value === value ? lastSelected : null
 
-  const matchingLabel =
-    options.find((option) => option.value === value)?.label ??
-    remembered?.label
+  const selected =
+    options.find((option) => option.value === value) ?? remembered
 
   function handleOpenChange(next: boolean) {
     setOpen(next)
@@ -156,16 +154,12 @@ export function LocationCombobox({
   const canClear = value !== undefined && !disabled
 
   return (
-    // The clear control is a sibling of the trigger, positioned over it: a
-    // button inside a button would not be valid HTML.
+    // The clear button sits beside the trigger: buttons cannot nest.
     <div className="relative min-w-0">
       <Popover open={open} onOpenChange={handleOpenChange}>
         <PopoverTrigger
           render={
-            // No explicit `role="combobox"`: the search input lives inside the
-            // popup rather than on the trigger, so this is a button that opens
-            // a listbox, and that is what Base UI's trigger announces — it
-            // supplies aria-haspopup, aria-expanded and aria-controls itself.
+            // A button that opens a listbox; Base UI adds the ARIA attributes.
             <button
               id={id}
               type="button"
@@ -178,32 +172,36 @@ export function LocationCombobox({
             />
           }
         >
-          {/*
-            `min-w-0` is what actually lets `truncate` work here: without it a
-            long option label (an ASN name, say) sets the button's intrinsic
-            width and pushes the whole rail wider than its column.
-          */}
           <span
             className={cn(
               'min-w-0 flex-1 truncate',
-              !matchingLabel && 'text-ink-muted/70',
+              !selected && 'text-ink-muted/70',
             )}
           >
-            {matchingLabel ?? placeholder}
+            {selected ? <OptionText option={selected} /> : placeholder}
           </span>
         </PopoverTrigger>
 
+        {/* Capped to the viewport space Base UI reports. */}
         <PopoverContent
-          className="border-hairline w-(--anchor-width) min-w-64 p-0"
+          className="border-hairline flex max-h-(--available-height) w-(--anchor-width) min-w-64 flex-col overflow-hidden p-0"
           align="start"
         >
-          <Command shouldFilter={false}>
+          <Command shouldFilter={false} className="min-h-0 flex-1">
             <CommandInput
               placeholder={searchPlaceholder}
               value={searchText}
               onValueChange={handleSearchChange}
             />
-            <CommandList onScroll={handleScroll}>
+            {/*
+              Forces an always-visible scrollbar over macOS's fading overlay,
+              so long lists look long. No `scrollbar-width`: Chrome then
+              ignores these pseudo-elements.
+            */}
+            <CommandList
+              onScroll={handleScroll}
+              className="min-h-0 flex-1 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:border-4 [&::-webkit-scrollbar-thumb]:border-transparent [&::-webkit-scrollbar-thumb]:bg-ink-muted/40 [&::-webkit-scrollbar-thumb]:bg-clip-content [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar]:w-3"
+            >
               {error ? (
                 <div className="p-3 text-sm">
                   <p className="text-red-600">{error.message}</p>
@@ -231,29 +229,25 @@ export function LocationCombobox({
                   {visible.map((option) => (
                     <CommandItem
                       key={option.value}
-                      // cmdk identifies an item by `value`, so this has to be
-                      // the unique one (an alias, not a label): two cities can
-                      // share a name, and a duplicate value would make keyboard
-                      // selection pick the wrong row.
+                      // Must be unique for cmdk; labels can repeat.
                       value={option.value}
                       onSelect={() => handleSelect(option)}
                       className={cn(
                         option.value === value && 'text-brand font-medium',
                       )}
                     >
-                      <span className="flex-1 truncate">{option.label}</span>
+                      {/* Wraps, so long ASN names can be read in full. */}
+                      <span className="min-w-0 flex-1 break-words">
+                        <OptionText option={option} />
+                      </span>
                       {option.nodeCount !== undefined ? (
                         <span className="text-ink-muted text-xs tabular-nums">
-                          {option.nodeCount.toLocaleString()}
+                          {formatNodeCount(option.nodeCount)}
                         </span>
                       ) : null}
                     </CommandItem>
                   ))}
 
-                  {/*
-                    A list that just stops reads as "that is everything". This
-                    says it is not, and names both ways to get there.
-                  */}
                   {remaining > 0 ? (
                     <p
                       aria-live="polite"

@@ -7,10 +7,7 @@ import { Input } from '@/components/ui/input'
 import type { ListRequestInput } from '@/lib/models/residential'
 import { cn } from '@/lib/utils'
 
-import { CONTROL_CLASS, Field, FieldNote } from './Field'
-
-/** Characters that break `scheme://user:password@host:port` when unescaped. */
-const URL_BREAKING = /[@:/]/
+import { CONTROL_CLASS, Field } from './Field'
 
 export function CredentialsFields({
   form,
@@ -19,7 +16,6 @@ export function CredentialsFields({
 }) {
   const [revealed, setRevealed] = useState(false)
   const { errors } = form.formState
-  const password = form.watch('proxy_user_password') ?? ''
 
   return (
     <>
@@ -27,12 +23,13 @@ export function CredentialsFields({
         id="proxy_user_id"
         label="Proxy user ID"
         required
+        description="Letters and numbers only."
         error={errors.proxy_user_id?.message}
       >
         <Input
           id="proxy_user_id"
           autoComplete="username"
-          placeholder="1_oGDQZ"
+          placeholder="abc123"
           aria-required
           aria-invalid={Boolean(errors.proxy_user_id)}
           className={cn(CONTROL_CLASS, 'aria-invalid:border-red-500')}
@@ -44,6 +41,7 @@ export function CredentialsFields({
         id="proxy_user_password"
         label="Password"
         required
+        description="Letters and numbers only."
         error={errors.proxy_user_password?.message}
       >
         <div className="relative">
@@ -65,19 +63,6 @@ export function CredentialsFields({
           </button>
         </div>
       </Field>
-
-      {/*
-        The spec says accept any non-empty password, so this warns instead of
-        blocking: the user still gets their list, but they find out here why it
-        will not parse rather than in their proxy client.
-      */}
-      {URL_BREAKING.test(password) ? (
-        <FieldNote tone="warning">
-          This password contains <code>@</code>, <code>:</code> or{' '}
-          <code>/</code>, which most clients cannot read inside a proxy URL. The
-          list is still generated as asked.
-        </FieldNote>
-      ) : null}
     </>
   )
 }

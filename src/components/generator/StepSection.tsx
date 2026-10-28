@@ -1,9 +1,6 @@
 import type { ReactNode } from 'react'
 
-/**
- * One numbered step in the form rail, with the connector line that runs from
- * this step's badge down to the next one.
- */
+/** A numbered form step, with the line connecting it to the next. */
 export function StepSection({
   step,
   title,
@@ -26,7 +23,6 @@ export function StepSection({
         {step}
       </span>
 
-      {/* The rail between badges. Decorative, so it is hidden from the tree. */}
       {isLast ? null : (
         <span
           aria-hidden

@@ -1,6 +1,6 @@
 'use client'
 
-import { Controller, type UseFormReturn } from 'react-hook-form'
+import { Controller, useWatch, type UseFormReturn } from 'react-hook-form'
 
 import { Input } from '@/components/ui/input'
 import {
@@ -16,14 +16,7 @@ import { cn } from '@/lib/utils'
 import { ChoiceGroup, type Choice } from './ChoiceGroup'
 import { CONTROL_CLASS, Field, FieldNote } from './Field'
 
-/**
- * `list_format` is the proxy **protocol**, not a line layout: the generated
- * line is always `<format>://<username>:<password>@host:port`.
- *
- * Each card carries that shape as a hint, derived from the format rather than
- * written out per option, so the preview cannot drift from what the format
- * actually produces.
- */
+/** `list_format` is the protocol; each card previews the line it produces. */
 const FORMAT_CHOICES: ReadonlyArray<Choice<ListFormat>> = LIST_FORMATS.map(
   (format) => ({
     value: format,
@@ -44,7 +37,10 @@ export function OptionsFields({
   form: UseFormReturn<ListRequestInput, unknown, unknown>
 }) {
   const { errors } = form.formState
-  const sessionType = form.watch('list_session_type')
+  const sessionType = useWatch({
+    control: form.control,
+    name: 'list_session_type',
+  })
 
   return (
     <>
@@ -63,10 +59,7 @@ export function OptionsFields({
           step={1}
           aria-invalid={Boolean(errors.list_count)}
           className={cn(CONTROL_CLASS, 'aria-invalid:border-red-500')}
-          // A number input hands react-hook-form a string, or NaN when empty,
-          // so the shared `z.number()` schema would reject a value the user
-          // sees as a number. `valueAsNumber` is what keeps one schema working
-          // for both the form and the API.
+          // The shared schema expects a number, not the input's string.
           {...form.register('list_count', { valueAsNumber: true })}
         />
       </Field>
@@ -103,11 +96,6 @@ export function OptionsFields({
               columns={2}
             />
 
-            {/*
-              A rotating list carries no session ID, so every line is the same
-              string. That is what the spec asks for, so it ships as specified
-              — with a note, so nobody reads the repetition as a bug.
-            */}
             {sessionType === 'rotating' ? (
               <FieldNote>
                 Rotating lists have no session ID, so all lines are identical.
