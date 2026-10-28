@@ -60,6 +60,21 @@ describe('POST /api/residential/list', () => {
     expect((await response.json()).error).toBe('invalid_json')
   })
 
+  // One oversized user ID times `list_count: 1000` used to build gigabytes of
+  // strings and crash the process.
+  it('returns payload_too_large for a body over 16 KB', async () => {
+    const response = await post(
+      JSON.stringify({
+        proxy_user_id: 'a'.repeat(20 * 1024),
+        proxy_user_password: 'p',
+        list_count: 1000,
+      }),
+    )
+
+    expect(response.status).toBe(413)
+    expect((await response.json()).error).toBe('payload_too_large')
+  })
+
   it.each([
     ['a missing password', { proxy_user_id: 'user1' }],
     ['an out-of-range count', { ...{ proxy_user_id: 'u', proxy_user_password: 'p' }, list_count: 0 }],

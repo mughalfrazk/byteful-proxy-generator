@@ -4,17 +4,13 @@ import { z } from 'zod'
 import type { ApiErrorBody } from '@/lib/models/error'
 
 /**
- * Every error code the API can return, with the HTTP status it maps to.
- *
- * There is one code for every bad parameter (`invalid_parameter`) with the
- * detail in `message`: every validation failure comes out of the same zod
- * issue list, and the client renders the message rather than branching on the
- * code. Upstream failures stay separate because they carry different HTTP
- * statuses and different advice.
+ * Every error code the API returns, with its HTTP status. All bad parameters
+ * share `invalid_parameter`, with the detail in `message`.
  */
 export const ERROR_STATUS = {
   invalid_json: 400,
   invalid_parameter: 400,
+  payload_too_large: 413,
   upstream_error: 502,
   upstream_invalid_response: 502,
   lookup_unavailable: 503,
@@ -27,6 +23,7 @@ export type ErrorCode = keyof typeof ERROR_STATUS
 const DEFAULT_MESSAGES: Record<ErrorCode, string> = {
   invalid_json: 'The request body is not valid JSON.',
   invalid_parameter: 'One or more parameters are invalid.',
+  payload_too_large: 'The request body is too large.',
   upstream_error: 'The location service returned an unexpected error.',
   upstream_invalid_response:
     'The location service returned data in an unexpected format.',
@@ -69,10 +66,8 @@ export function invalidParameter(error: z.ZodError): AppError {
 }
 
 /**
- * The single exit for anything thrown inside a route handler. Nothing escapes
- * as a default Next error page or a stack trace.
- *
- * Request bodies are never logged: they contain the proxy password.
+ * Turns anything thrown in a route handler into the error body. Request
+ * bodies are never logged: they contain the proxy password.
  */
 export function toErrorResponse(err: unknown): Response {
   const appError = normalise(err)
@@ -108,9 +103,7 @@ export function withErrorHandling<A extends unknown[]>(
     try {
       return await handler(...args)
     } catch (err) {
-      // Next uses thrown values as control flow (dynamic-rendering bailouts,
-      // redirect, notFound). Catching those and answering 500 would break the
-      // framework, so they go straight back up.
+      // Let Next's own control-flow throws (redirect, bailouts) through.
       unstable_rethrow(err)
       return toErrorResponse(err)
     }

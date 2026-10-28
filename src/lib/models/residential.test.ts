@@ -47,7 +47,7 @@ describe('list_count', () => {
 
   it('rejects a decimal', () => {
     expect(messages(parse({ list_count: 10.5 }))).toContain(
-      'list_count must be a whole number, not a decimal',
+      'must be a whole number, not a decimal',
     )
   })
 })
@@ -84,12 +84,28 @@ describe('cross-field rules', () => {
     const result = parse({ city_alias: 'london' })
 
     expect(result.success).toBe(false)
-    expect(messages(result)).toContain('city_alias requires country_id')
+    expect(messages(result)).toContain('requires country_id')
   })
 
   it('accepts city_alias with country_id', () => {
     expect(parse({ country_id: 'gb', city_alias: 'london' }).success).toBe(true)
   })
+
+  // Real aliases from the city search, including ones that contain what looks
+  // like a username segment.
+  it.each(['london', 'ca_on_london', 've_s_colon', 'ar_c_bella_vista'])(
+    'accepts the real city_alias %j',
+    (city_alias) => {
+      expect(parse({ country_id: 'gb', city_alias }).success).toBe(true)
+    },
+  )
+
+  it.each(['x_s_FIXEDSESSION00', 'x:y@evil.com:80/', 'London', 'new york', ''])(
+    'rejects %j as a city_alias, since it is not an alias shape',
+    (city_alias) => {
+      expect(parse({ country_id: 'gb', city_alias }).success).toBe(false)
+    },
+  )
 
   it('accepts asn_id on its own, since ASN needs no country', () => {
     expect(parse({ asn_id: 5089 }).success).toBe(true)
@@ -105,14 +121,28 @@ describe('strictness and required fields', () => {
   })
 
   it('rejects an empty user id', () => {
-    expect(parse({ proxy_user_id: '   ' }).success).toBe(false)
+    const result = parse({ proxy_user_id: '' })
+
+    expect(result.success).toBe(false)
+    expect(messages(result)).toEqual(['is required'])
   })
 
   it('rejects an empty password', () => {
     expect(parse({ proxy_user_password: '' }).success).toBe(false)
   })
 
-  it('accepts a password with punctuation, per the spec', () => {
-    expect(parse({ proxy_user_password: 'p@ss:word/1' }).success).toBe(true)
+  it('accepts alphanumeric credentials', () => {
+    expect(
+      parse({ proxy_user_id: 'User1', proxy_user_password: 'Secret42' }).success,
+    ).toBe(true)
   })
+
+  // Anything else could break the proxy URL (`@`, `:`, `/`) or the username.
+  it.each(['p@ss', 'a:b', 'a/b', 'a#b', 'a b', ' alice', 'a_b', 'pässe'])(
+    'rejects %j as a user id or password',
+    (value) => {
+      expect(parse({ proxy_user_id: value }).success).toBe(false)
+      expect(parse({ proxy_user_password: value }).success).toBe(false)
+    },
+  )
 })

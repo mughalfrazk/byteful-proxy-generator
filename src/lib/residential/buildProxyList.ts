@@ -6,12 +6,8 @@ import { TARGETING_SEGMENTS } from './targeting'
 export const PROXY_HOST = 'residential.byteful.com'
 export const PROXY_PORT = 8000
 
-/**
- * The targeting part of the username: `_c_gb_city_london_asn_5089`.
- *
- * Walks `TARGETING_SEGMENTS` in order, so the segment order is data rather
- * than control flow.
- */
+
+/** The targeting part of the username: `_c_gb_city_london_asn_5089`. */
 export function buildTargetingSuffix(request: ListRequest): string {
   let suffix = ''
 
@@ -34,9 +30,7 @@ export function buildUsername(
 }
 
 /**
- * `ListRequest -> string[]`. Pure, no I/O.
- *
- * Sticky lists get one unique session ID per line. Rotating lists get the same
+ * Sticky lists get a unique session ID per line; rotating lists repeat one
  * username `list_count` times, per the spec.
  */
 export function buildProxyList(request: ListRequest): string[] {
@@ -51,7 +45,7 @@ export function buildProxyList(request: ListRequest): string[] {
     return Array.from({ length: list_count }, () => toProxy(username))
   }
 
-  // A Set makes the spec's uniqueness rule structural rather than probabilistic.
+  // A Set guarantees uniqueness rather than relying on chance.
   const sessionIds = new Set<string>()
   while (sessionIds.size < list_count) {
     sessionIds.add(generateSessionId())

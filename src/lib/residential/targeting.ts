@@ -1,17 +1,8 @@
 /**
- * The single place to extend targeting.
+ * Username targeting segments, in order. `buildUsername()` walks this table
+ * and `ListRequestSchema` reads its `requires` rules.
  *
- * Adding a zip code (`zip_code_id`) or a US state (`subdivision_id`) — both of
- * which Byteful's real endpoint supports — means one entry here, one schema
- * field and one form field. Nothing else needs to change:
- *
- *   - `buildUsername()` walks this table in order to assemble the username;
- *   - `ListRequestSchema` reads the `requires` rules from it, so the
- *     cross-field validation can never drift from the username format.
- *
- * This file is pure data with no imports, which is why `lib/models` is allowed
- * to read it without inverting the layering: there is one table, and both the
- * schema and the builder read it rather than restating it.
+ * Pure data with no imports, so `lib/models` can depend on it.
  */
 export const TARGETING_SEGMENTS = [
   { field: 'country_id', prefix: 'c' },
