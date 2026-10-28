@@ -44,8 +44,11 @@ next-env.d.ts
 !.env.example
 
 # Working notes, not part of the deliverable. The README carries everything a
-# reader needs; this stays local.
+# reader needs; these stay local.
 /PLAN.md
+/flows.md
+/REVIEW.md
+/VIDEO_SCRIPT.md
 
 # Re-created by `next dev` on every run (see node_modules/next/dist/server/lib/
 # generate-agent-files.js), so it is tooling output rather than source.
