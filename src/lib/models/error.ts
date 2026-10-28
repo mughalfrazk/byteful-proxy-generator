@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-/** Every error from every route has this body, and only this body. */
+/** The body of every error from every route. */
 export const ApiErrorSchema = z.object({
   error: z.string(),
   message: z.string(),

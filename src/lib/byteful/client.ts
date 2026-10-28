@@ -6,9 +6,10 @@ import { AppError } from '@/lib/errors'
 
 import { cached } from './cache'
 import {
-  BytefulAsnSearchSchema,
+  BytefulAsnAvailabilityResponseSchema,
+  BytefulCityAvailabilityResponseSchema,
   BytefulCitySearchSchema,
-  BytefulCountrySearchSchema,
+  BytefulCountryAvailabilityResponseSchema,
   narrowAsn,
   narrowCity,
   narrowCountry,
@@ -21,27 +22,20 @@ import {
 const BASE_URL = 'https://api.byteful.com/1.0/public/user/'
 const TIMEOUT_MS = 8_000
 
-/** Used when a 429 carries no usable `Retry-After`. */
+/** Byteful's 429s carry no `Retry-After`; one second is its rate window. */
 const DEFAULT_RETRY_AFTER_MS = 1_000
-/** A hostile or absurd `Retry-After` must not hold the request open. */
 const MAX_RETRY_AFTER_MS = 3_000
 
-const COUNTRY_PER_PAGE = 100
-/** Byteful rejects a `per_page` above 1000 outright. */
+/** Byteful rejects a `per_page` above 1000. */
 const CITY_PER_PAGE = 1_000
-const ASN_PER_PAGE = 1_000
 
-/** Server-side cache TTLs. Countries move rarely; city and ASN searches churn. */
-const COUNTRIES_TTL_MS = 60 * 60 * 1_000
-const SEARCH_TTL_MS = 10 * 60 * 1_000
+/** Availability is live, so it matches the browser's cache window; aliases never change. */
+const AVAILABILITY_TTL_MS = 5 * 60 * 1_000
+const CITY_ALIASES_TTL_MS = 60 * 60 * 1_000
 
 type QueryValue = string | number | undefined
 
-/**
- * The only caller of `api.byteful.com`. `'server-only'` is the first import,
- * so the build fails if any client component reaches for this module and the
- * API keys can never end up in the browser bundle.
- */
+/** Reads the keys. `server-only` above fails the build if this reaches the client. */
 function headers(): HeadersInit {
   const publicKey = process.env.BYTEFUL_PUBLIC_KEY
   const privateKey = process.env.BYTEFUL_PRIVATE_KEY
@@ -65,9 +59,7 @@ function buildUrl(path: string, query: Record<string, QueryValue>): string {
 
   for (const [key, value] of Object.entries(query)) {
     if (value === undefined || value === '') continue
-    // Raw values only. URLSearchParams encodes them exactly once, so a
-    // `like_subdivision_id` of `gb%` goes out as `gb%25`. Pre-encoding here
-    // would send `gb%2525`, which matches nothing.
+    // Raw values: URLSearchParams encodes `gb%` as `gb%25` itself.
     url.searchParams.set(key, String(value))
   }
 
@@ -127,7 +119,7 @@ async function send(url: string): Promise<Response> {
   } catch (err) {
     if (err instanceof AppError) throw err
 
-    // A timeout or a DNS/connection failure. Both are "try again shortly".
+    // Timeout or connection failure.
     throw new AppError('lookup_unavailable', undefined, {
       url,
       cause: err instanceof Error ? err.message : String(err),
@@ -135,10 +127,7 @@ async function send(url: string): Promise<Response> {
   }
 }
 
-/**
- * Byteful's `api_request_id` is useful when asking them about a failure, so it
- * is logged. It is never returned to the client.
- */
+/** Logs Byteful's `api_request_id` for support; it is never returned. */
 async function errorContext(
   response: Response,
   url: string,
@@ -150,7 +139,7 @@ async function errorContext(
       apiRequestId = (body as { api_request_id: unknown }).api_request_id
     }
   } catch {
-    // An unparseable error body is not itself worth failing over.
+    // An unparsable error body is not worth failing over.
   }
 
   return { url, status: response.status, api_request_id: apiRequestId }
@@ -171,16 +160,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/**
- * How long to wait before retrying a 429, from the response's `Retry-After`.
- *
- * Waiting the server's stated time beats guessing: a fixed delay retries too
- * early under a longer window and burns the second attempt. Only the
- * delay-seconds form is handled — the HTTP-date form is legal but Byteful does
- * not send it, and a wrong date parse would be worse than the default.
- */
+/** The delay-seconds form of `Retry-After`, capped; the default otherwise. */
 function readRetryAfter(response: Response): number {
-  const seconds = Number(response.headers.get('Retry-After'))
+  // Checked before `Number()`, which turns a missing or blank header into 0.
+  const header = response.headers.get('Retry-After')?.trim()
+  if (!header) return DEFAULT_RETRY_AFTER_MS
+
+  const seconds = Number(header)
 
   if (!Number.isFinite(seconds) || seconds < 0) return DEFAULT_RETRY_AFTER_MS
 
@@ -190,74 +176,61 @@ function readRetryAfter(response: Response): number {
 const byName = (a: { name: string }, b: { name: string }) =>
   a.name.localeCompare(b.name)
 
+const byNodeCount = (
+  a: { name: string; nodeCount: number },
+  b: { name: string; nodeCount: number },
+) => b.nodeCount - a.nodeCount || byName(a, b)
+
+const hasNodes = (item: { nodeCount: number }) => item.nodeCount > 0
+
 /**
- * Every country with at least one node.
- *
- * Fetches page 1, derives the page count from `total_count`, then fetches any
- * remaining pages in parallel. `min_country_node_count=1` hides countries with
- * no IPs so users cannot target them.
- *
- * `sort_by` is only here to make the paging deterministic — the list is
- * re-sorted by name below, because Byteful sorts descending by default.
+ * Live node counts grouped by country, city or ASN, as Byteful's dashboard
+ * shows them. One call returns a whole group. Used instead of the search
+ * endpoints, whose counts and ASN countries do not match what is routable;
+ * see the README. `country_id` must be lowercase.
  */
+async function searchAvailability<T extends z.ZodType>(
+  schema: T,
+  query: Record<string, QueryValue>,
+) {
+  const path = 'residential_availability/search'
+  const raw = await requestJson(path, query)
+  return parse(schema, raw, path)
+}
+
+/** Every country with live nodes, by name. */
 export const searchCountries = cached<void, Country[]>(
-  COUNTRIES_TTL_MS,
+  AVAILABILITY_TTL_MS,
   () => 'countries',
   async () => {
-    const path = 'country/search'
-    const query: Record<string, QueryValue> = {
-      per_page: COUNTRY_PER_PAGE,
-      min_country_node_count: 1,
-      sort_by: 'country_name',
-    }
-
-    const firstRaw = await requestJson(path, { ...query, page: 1 })
-    const first = parse(BytefulCountrySearchSchema, firstRaw, path)
-
-    const totalPages = readTotalPages(first, COUNTRY_PER_PAGE)
-    const rest = await Promise.all(
-      Array.from({ length: Math.max(0, totalPages - 1) }, (_, i) =>
-        requestJson(path, { ...query, page: i + 2 }).then((raw) =>
-          parse(BytefulCountrySearchSchema, raw, path),
-        ),
-      ),
+    const response = await searchAvailability(
+      BytefulCountryAvailabilityResponseSchema,
+      { group_by: 'country' },
     )
 
-    return [first, ...rest]
-      .flatMap((page) => page.data)
+    return response.data.residential_availability
       .map(narrowCountry)
+      .filter(hasNodes)
       .sort(byName)
   },
 )
 
 /**
- * Every city in one country.
+ * `city_id` → the `city/search` row with its alias, for one country.
  *
- * Byteful has no country filter on this endpoint — passing `country_id`
- * silently returns the whole world. The country lives in `subdivision_id`, an
- * ISO 3166-2 code such as `gb-lnd`, so the filter is a prefix match on that:
- * `like_subdivision_id=gb%`.
- *
- * The whole list is fetched rather than a top slice, because cities are bounded
- * per country — the largest observed is China at 1,191 — so one or two pages
- * cover any country, and the browser can then filter them instantly. ASNs get
- * the opposite treatment for the opposite reason: see `searchAsns`.
- *
- * `min_city_node_count=1` hides cities with no IPs, matching Byteful's own
- * dashboard. It costs the few countries whose only city reports zero — Singapore
- * has 4,798 country nodes and one city, at 0 — which then offer no city at all;
- * targeting the country still works, and an unusable option is worse than none.
+ * `city/search` has no country filter, so this prefix-matches the ISO 3166-2
+ * `subdivision_id` (`gb-lnd`). `min_city_node_count=1` cuts the pages without
+ * losing any city that availability lists.
  */
-export const searchCities = cached(
-  SEARCH_TTL_MS,
-  ({ countryId }: { countryId: string }) => `cities:${countryId}`,
-  async ({ countryId }): Promise<City[]> => {
+const searchCityAliases = cached(
+  CITY_ALIASES_TTL_MS,
+  ({ countryId }: { countryId: string }) => `city-aliases:${countryId}`,
+  async ({ countryId }) => {
     const path = 'city/search'
     const query: Record<string, QueryValue> = {
       like_subdivision_id: `${countryId}%`,
       min_city_node_count: 1,
       per_page: CITY_PER_PAGE,
-      sort_by: 'city_node_count',
     }
 
     const firstRaw = await requestJson(path, { ...query, page: 1 })
@@ -272,50 +245,69 @@ export const searchCities = cached(
       ),
     )
 
-    // Re-sorted locally because pages arrive in parallel: Byteful orders within
-    // a page, not across the set we stitch back together.
-    return [first, ...rest]
-      .flatMap((page) => page.data)
-      .map(narrowCity)
-      .sort((a, b) => b.nodeCount - a.nodeCount || byName(a, b))
+    return new Map(
+      [first, ...rest]
+        .flatMap((page) => page.data)
+        .map((city) => [city.city_id, city] as const),
+    )
   },
 )
 
 /**
- * Every ASN with nodes, optionally narrowed to one country.
- *
- * Fetched whole like cities, so the picker searches without a round trip. This
- * is the larger of the two lists — 15,077 ASNs worldwide, 16 pages — which is
- * why the result is cached for the whole process and the page count is derived
- * rather than guessed.
+ * Every city in one country with live nodes, busiest first. Availability has
+ * no alias, so it is joined to `city/search` on `city_id`; a live city without
+ * an alias cannot be targeted and is dropped.
  */
-export const searchAsns = cached(
-  SEARCH_TTL_MS,
-  ({ countryId }: { countryId?: string }) => `asns:${countryId ?? ''}`,
-  async ({ countryId }): Promise<Asn[]> => {
-    const path = 'asn/search'
-    const query: Record<string, QueryValue> = {
-      country_id: countryId,
-      min_asn_node_count: 1,
-      per_page: ASN_PER_PAGE,
-      sort_by: 'asn_node_count',
+export const searchCities = cached(
+  AVAILABILITY_TTL_MS,
+  ({ countryId }: { countryId: string }) => `cities:${countryId}`,
+  async ({ countryId }): Promise<City[]> => {
+    const [live, aliases] = await Promise.all([
+      searchAvailability(BytefulCityAvailabilityResponseSchema, {
+        country_id: countryId,
+        group_by: 'city',
+      }),
+      searchCityAliases({ countryId }),
+    ])
+
+    const cities: City[] = []
+    let unmatched = 0
+
+    for (const row of live.data.residential_availability) {
+      const info = aliases.get(row.city_id)
+      if (info) cities.push(narrowCity(row, info))
+      else unmatched += 1
     }
 
-    const firstRaw = await requestJson(path, { ...query, page: 1 })
-    const first = parse(BytefulAsnSearchSchema, firstRaw, path)
+    if (unmatched > 0) {
+      console.error('[byteful] live cities with no alias', {
+        countryId,
+        unmatched,
+      })
+    }
 
-    const totalPages = readTotalPages(first, ASN_PER_PAGE)
-    const rest = await Promise.all(
-      Array.from({ length: Math.max(0, totalPages - 1) }, (_, i) =>
-        requestJson(path, { ...query, page: i + 2 }).then((raw) =>
-          parse(BytefulAsnSearchSchema, raw, path),
-        ),
-      ),
+    return cities.filter(hasNodes).sort(byNodeCount)
+  },
+)
+
+/**
+ * Every ASN with live nodes worldwide, in a country, or in one of its cities,
+ * busiest first. Filters by the undocumented `city_id` rather than
+ * `city_name`, because city names repeat within a country.
+ */
+export const searchAsns = cached(
+  AVAILABILITY_TTL_MS,
+  ({ countryId, cityId }: { countryId?: string; cityId?: number }) =>
+    `asns:${countryId ?? ''}:${cityId ?? ''}`,
+  async ({ countryId, cityId }): Promise<Asn[]> => {
+    const response = await searchAvailability(
+      BytefulAsnAvailabilityResponseSchema,
+      { country_id: countryId, city_id: cityId, group_by: 'asn' },
     )
 
-    return [first, ...rest]
-      .flatMap((page) => page.data)
+    return response.data.residential_availability
       .map(narrowAsn)
-      .sort((a, b) => b.nodeCount - a.nodeCount || byName(a, b))
+      .filter(hasNodes)
+      .sort(byNodeCount)
   },
 )

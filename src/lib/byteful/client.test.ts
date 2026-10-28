@@ -25,21 +25,55 @@ function jsonResponse(body: unknown, status = 200): Response {
   })
 }
 
-function countryPage(
-  countries: Array<[string, string, number]>,
-  pagination?: { per_page?: number; total_count?: number },
-) {
+/** A `residential_availability/search` body, shaped as Byteful returns it. */
+function availability(rows: Array<Record<string, unknown>>) {
   return {
-    data: countries.map(([country_id, country_name, country_node_count]) => ({
+    data: {
+      residential_availability: rows,
+      total_residential_availability_node_count: rows.reduce(
+        (sum, row) => sum + Number(row.residential_availability_node_count),
+        0,
+      ),
+    },
+    message: 'Residential Options search successful',
+  }
+}
+
+function countries(rows: Array<[string, string, number]>) {
+  return availability(
+    rows.map(([country_id, country_name, count]) => ({
       country_id,
       country_name,
-      country_node_count,
+      residential_availability_node_count: count,
     })),
-    page: 1,
-    per_page: pagination?.per_page ?? 100,
-    item_count: countries.length,
-    total_count: pagination?.total_count ?? countries.length,
-  }
+  )
+}
+
+/**
+ * Answers each upstream call by its endpoint, for lookups that call more than
+ * one: a city list reads availability and `city/search` together.
+ */
+function route(handlers: {
+  availability?: (url: URL) => unknown
+  citySearch?: (url: URL) => unknown
+}) {
+  fetchMock.mockImplementation((input: string | URL) => {
+    const url = new URL(String(input))
+    if (url.pathname.endsWith('/residential_availability/search')) {
+      return jsonResponse(handlers.availability?.(url) ?? availability([]))
+    }
+    if (url.pathname.endsWith('/city/search')) {
+      return jsonResponse(handlers.citySearch?.(url) ?? { data: [] })
+    }
+    throw new Error(`unexpected upstream call: ${url}`)
+  })
+}
+
+/** The URLs of the upstream calls made to one endpoint. */
+function callsTo(endpoint: string): URL[] {
+  return fetchMock.mock.calls
+    .map(([input]) => new URL(String(input)))
+    .filter((url) => url.pathname.endsWith(`/${endpoint}`))
 }
 
 /**
@@ -69,7 +103,7 @@ afterEach(() => {
 
 describe('credentials', () => {
   it('sends both keys as headers and never in the URL', async () => {
-    fetchMock.mockImplementation(() => jsonResponse(countryPage([['gb', 'UK', 10]])))
+    fetchMock.mockImplementation(() => jsonResponse(countries([['gb', 'UK', 10]])))
 
     const { searchCountries } = await loadClient()
     await searchCountries()
@@ -116,7 +150,7 @@ describe('the error table', () => {
   it('succeeds when the retry after a 429 works', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({}, 429))
-      .mockResolvedValueOnce(jsonResponse(countryPage([['gb', 'UK', 10]])))
+      .mockResolvedValueOnce(jsonResponse(countries([['gb', 'UK', 10]])))
 
     const { searchCountries } = await loadClient()
     await expect(searchCountries()).resolves.toEqual([
@@ -133,13 +167,30 @@ describe('the error table', () => {
       .mockResolvedValueOnce(
         new Response('{}', { status: 429, headers: { 'Retry-After': '0' } }),
       )
-      .mockResolvedValueOnce(jsonResponse(countryPage([['gb', 'UK', 10]])))
+      .mockResolvedValueOnce(jsonResponse(countries([['gb', 'UK', 10]])))
 
     const { searchCountries } = await loadClient()
     const startedAt = Date.now()
     await expect(searchCountries()).resolves.toHaveLength(1)
 
     expect(Date.now() - startedAt).toBeLessThan(500)
+  })
+
+  /**
+   * Byteful's real 429s carry no `Retry-After` at all. `Number(null)` is 0,
+   * so without a guard the retry fired instantly into the same rate-limited
+   * second; this pins the one-second default for that case.
+   */
+  it('waits the default when a 429 has no Retry-After, as Byteful sends', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ message: '20 per 1 second' }, 429))
+      .mockResolvedValueOnce(jsonResponse(countries([['gb', 'UK', 10]])))
+
+    const { searchCountries } = await loadClient()
+    const startedAt = Date.now()
+    await expect(searchCountries()).resolves.toHaveLength(1)
+
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(900)
   })
 
   it('ignores a nonsense Retry-After and falls back to the default', async () => {
@@ -189,275 +240,175 @@ describe('the error table', () => {
 })
 
 describe('searchCountries', () => {
-  it('merges every page the reported total implies', async () => {
-    fetchMock
-      .mockResolvedValueOnce(
-        jsonResponse(
-          countryPage([['gb', 'UK', 5]], { per_page: 100, total_count: 250 }),
-        ),
-      )
-      .mockResolvedValueOnce(jsonResponse(countryPage([['de', 'Germany', 7]])))
-      .mockResolvedValueOnce(jsonResponse(countryPage([['at', 'Austria', 2]])))
-
-    const { searchCountries } = await loadClient()
-    const countries = await searchCountries()
-
-    expect(fetchMock).toHaveBeenCalledTimes(3)
-    expect(countries.map((country) => country.name)).toEqual([
-      'Austria',
-      'Germany',
-      'UK',
-    ])
-  })
-
-  it('stops at one page when the total fits in it', async () => {
-    fetchMock.mockImplementation(() =>
-      jsonResponse(
-        countryPage([['gb', 'UK', 5]], { per_page: 100, total_count: 1 }),
-      ),
-    )
+  it('reads live availability grouped by country, in one call', async () => {
+    route({ availability: () => countries([['gb', 'UK', 5]]) })
 
     const { searchCountries } = await loadClient()
     await searchCountries()
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(callsTo('residential_availability/search')[0].searchParams.get('group_by')).toBe('country')
   })
 
-  it('asks Byteful for only the countries that have nodes', async () => {
-    fetchMock.mockImplementation(() =>
-      jsonResponse(countryPage([['gb', 'UK', 5]])),
-    )
+  it('drops countries with no live nodes, lowercases ids and sorts by name', async () => {
+    route({
+      availability: () =>
+        countries([
+          ['GB', 'UK', 5],
+          ['sg', 'Singapore', 0],
+          ['at', 'Austria', 2],
+        ]),
+    })
 
     const { searchCountries } = await loadClient()
-    await searchCountries()
-
-    expect(fetchMock.mock.calls[0][0]).toContain('min_country_node_count=1')
+    await expect(searchCountries()).resolves.toEqual([
+      { id: 'at', name: 'Austria', nodeCount: 2 },
+      { id: 'gb', name: 'UK', nodeCount: 5 },
+    ])
   })
 })
 
-describe('query strings', () => {
-  it('filters cities by the country prefix of subdivision_id', async () => {
-    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
-
-    const { searchCities } = await loadClient()
-    await searchCities({ countryId: 'gb' })
-
-    const url = String(fetchMock.mock.calls[0][0])
-    expect(url).toContain('like_subdivision_id=gb%25')
-    // Byteful ignores country_id on this endpoint and would return the world.
-    expect(url).not.toContain('country_id=gb')
+describe('searchCities', () => {
+  /** A `city/search` row: the alias and subdivision availability lacks. */
+  const cityInfo = (city_id: number, city_alias: string, subdivision_id: string) => ({
+    city_id,
+    city_alias,
+    city_name: city_alias,
+    subdivision_id,
   })
 
-  it('encodes the SQL wildcard exactly once', async () => {
-    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
-
-    const { searchCities } = await loadClient()
-    await searchCities({ countryId: 'gb' })
-
-    expect(String(fetchMock.mock.calls[0][0])).not.toContain('gb%2525')
-  })
-
-  it('sorts by node count, which Byteful orders descending by default', async () => {
-    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
-
-    const { searchCities } = await loadClient()
-    await searchCities({ countryId: 'gb' })
-
-    const url = String(fetchMock.mock.calls[0][0])
-    expect(url).toContain('sort_by=city_node_count')
-    // A leading "-" means ascending, which would surface the emptiest cities.
-    expect(url).not.toContain('sort_by=-city_node_count')
-  })
-
-  /**
-   * Cities are bounded per country, so the whole list is fetched and filtered
-   * in the browser. Nothing should ever narrow it upstream by name.
-   */
-  it('never filters cities by name upstream', async () => {
-    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
-
-    const { searchCities } = await loadClient()
-    await searchCities({ countryId: 'gb' })
-
-    expect(String(fetchMock.mock.calls[0][0])).not.toContain('like_city_name')
-  })
-
-  it('requests cities at the per_page ceiling Byteful allows', async () => {
-    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
-
-    const { searchCities } = await loadClient()
-    await searchCities({ countryId: 'gb' })
-
-    // 1001 is rejected with "Search per_page parameter is limited to 1000".
-    expect(String(fetchMock.mock.calls[0][0])).toContain('per_page=1000')
-  })
-
-  /**
-   * Byteful reports `city_node_count: 0` for the only city in some countries
-   * that do have nodes (Singapore), so a floor of 1 emptied those dropdowns.
-   * The floor stays on countries and ASNs, where it behaves.
-   */
-  it('sets no node-count floor on cities, unlike countries and ASNs', async () => {
-    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
-
-    const { searchCities, searchAsns } = await loadClient()
-
-    await searchCities({ countryId: 'sg' })
-    expect(String(fetchMock.mock.calls[0][0])).toContain(
-      'min_city_node_count=1',
-    )
-
-    await searchAsns({ countryId: 'sg' })
-    expect(String(fetchMock.mock.calls[1][0])).toContain('min_asn_node_count=1')
-  })
-
-  it('omits country_id for an ASN search with no country', async () => {
-    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
-
-    const { searchAsns } = await loadClient()
-    await searchAsns({})
-
-    expect(String(fetchMock.mock.calls[0][0])).not.toContain('country_id')
-  })
-
-  it('never filters ASNs by name upstream', async () => {
-    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
-
-    const { searchAsns } = await loadClient()
-    await searchAsns({ countryId: 'gb' })
-
-    expect(String(fetchMock.mock.calls[0][0])).not.toContain('like_asn_name')
-  })
-
-  it('fetches every page of ASNs, not just the first', async () => {
-    fetchMock.mockImplementation((input: string | URL) => {
-      const page = new URL(String(input)).searchParams.get('page')
-      return jsonResponse({
-        data: [
-          { asn_id: Number(page), asn_name: `AS ${page}`, asn_node_count: 1 },
-        ],
-        page: Number(page),
-        per_page: 1_000,
-        item_count: 1,
-        // 15,077 ASNs have nodes worldwide: sixteen pages.
-        total_count: 15_077,
-      })
-    })
-
-    const { searchAsns } = await loadClient()
-    const asns = await searchAsns({})
-
-    expect(fetchMock).toHaveBeenCalledTimes(16)
-    expect(asns).toHaveLength(16)
-  })
-
-  it('fetches every page of cities, not just the first', async () => {
-    fetchMock.mockImplementation((input: string | URL) => {
-      const page = new URL(String(input)).searchParams.get('page')
-      return jsonResponse({
-        data: [
-          {
-            city_alias: `city_${page}`,
-            city_name: `City ${page}`,
-            city_node_count: 1,
-            subdivision_id: 'cn-bj',
-          },
-        ],
-        page: Number(page),
-        per_page: 1_000,
-        item_count: 1,
-        // 1,191 cities, as China actually has: two pages, not one.
-        total_count: 1_191,
-      })
-    })
-
-    const { searchCities } = await loadClient()
-    const cities = await searchCities({ countryId: 'cn' })
-
-    expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(cities.map((city) => city.alias)).toEqual(['city_1', 'city_2'])
-  })
-
-  it('narrows a city row, deriving the subdivision that disambiguates it', async () => {
-    fetchMock.mockImplementation(() =>
-      jsonResponse({
-        data: [
-          {
-            city_alias: 'us_ga_albany',
-            city_name: 'Albany',
-            city_node_count: 535,
-            subdivision_id: 'us-ga',
-          },
-        ],
+  it('joins live cities to their aliases on city_id, busiest first', async () => {
+    route({
+      availability: () =>
+        availability([
+          { city_id: 1, city_name: 'Albany', residential_availability_node_count: 10 },
+          { city_id: 2, city_name: 'Albany', residential_availability_node_count: 99 },
+        ]),
+      citySearch: () => ({
+        data: [cityInfo(1, 'us_ga_albany', 'us-ga'), cityInfo(2, 'us_ny_albany', 'us-ny')],
       }),
-    )
+    })
 
     const { searchCities } = await loadClient()
     await expect(searchCities({ countryId: 'us' })).resolves.toEqual([
-      {
-        alias: 'us_ga_albany',
-        name: 'Albany',
-        nodeCount: 535,
-        subdivision: 'GA',
-      },
+      { id: 2, alias: 'us_ny_albany', name: 'Albany', nodeCount: 99, subdivision: 'NY' },
+      { id: 1, alias: 'us_ga_albany', name: 'Albany', nodeCount: 10, subdivision: 'GA' },
     ])
   })
 
-  it('sorts cities by node count across stitched-together pages', async () => {
-    fetchMock.mockImplementation((input: string | URL) => {
-      const page = new URL(String(input)).searchParams.get('page')
-      // Page 2 arrives holding the busiest city, so returning the pages in
-      // order would put it last.
-      const rows =
-        page === '1'
-          ? [['a', 'A', 10] as const]
-          : [['b', 'B', 99] as const]
-
-      return jsonResponse({
-        data: rows.map(([city_alias, city_name, city_node_count]) => ({
-          city_alias,
-          city_name,
-          city_node_count,
-          subdivision_id: 'gb-lnd',
-        })),
-        page: Number(page),
-        per_page: 1_000,
-        item_count: 1,
-        total_count: 1_500,
-      })
+  it('drops, and logs, a live city with no alias to target it by', async () => {
+    route({
+      availability: () =>
+        availability([
+          { city_id: 1, city_name: 'Known', residential_availability_node_count: 5 },
+          { city_id: 2, city_name: 'Unknown', residential_availability_node_count: 5 },
+        ]),
+      citySearch: () => ({ data: [cityInfo(1, 'known', 'gb-lnd')] }),
     })
 
     const { searchCities } = await loadClient()
     const cities = await searchCities({ countryId: 'gb' })
 
-    expect(cities.map((city) => city.name)).toEqual(['B', 'A'])
+    expect(cities.map((city) => city.alias)).toEqual(['known'])
+    expect(console.error).toHaveBeenCalled()
   })
 
-  it('narrows an ASN row to the fields the app uses', async () => {
-    fetchMock.mockImplementation(() =>
-      jsonResponse({
-        data: [
-          {
-            asn_id: 5089,
-            asn_name: 'Virgin Media Limited',
-            asn_node_count: 83576,
-            asn_rir: 'ripe',
-            country_id: 'gb',
-          },
-        ],
+  it('asks availability for the country grouped by city', async () => {
+    route({})
+
+    const { searchCities } = await loadClient()
+    await searchCities({ countryId: 'gb' })
+
+    const url = callsTo('residential_availability/search')[0]
+    expect(url.searchParams.get('country_id')).toBe('gb')
+    expect(url.searchParams.get('group_by')).toBe('city')
+  })
+
+  it('reads aliases by the country prefix of subdivision_id', async () => {
+    route({})
+
+    const { searchCities } = await loadClient()
+    await searchCities({ countryId: 'gb' })
+
+    const url = callsTo('city/search')[0]
+    // Encoded exactly once: `gb%2525` would match nothing.
+    expect(url.search).toContain('like_subdivision_id=gb%25')
+    expect(url.search).not.toContain('gb%2525')
+    // Byteful ignores country_id on this endpoint and would return the world.
+    expect(url.searchParams.has('country_id')).toBe(false)
+    expect(url.searchParams.get('min_city_node_count')).toBe('1')
+    // 1001 is rejected with "Search per_page parameter is limited to 1000".
+    expect(url.searchParams.get('per_page')).toBe('1000')
+  })
+
+  it('reads every page of aliases the reported total implies', async () => {
+    route({
+      citySearch: (url) => ({
+        data: [cityInfo(Number(url.searchParams.get('page')), 'c', 'cn-bj')],
+        per_page: 1_000,
+        // 1,191 cities, as China has without a node floor: two pages.
+        total_count: 1_191,
       }),
-    )
+    })
+
+    const { searchCities } = await loadClient()
+    await searchCities({ countryId: 'cn' })
+
+    expect(callsTo('city/search')).toHaveLength(2)
+  })
+})
+
+describe('searchAsns', () => {
+  it('reads the worldwide list in one call, with no location filter', async () => {
+    route({})
 
     const { searchAsns } = await loadClient()
-    await expect(searchAsns({})).resolves.toEqual([
-      { id: 5089, name: 'Virgin Media Limited', nodeCount: 83576 },
+    await searchAsns({})
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const url = callsTo('residential_availability/search')[0]
+    expect(url.searchParams.get('group_by')).toBe('asn')
+    expect(url.searchParams.has('country_id')).toBe(false)
+    expect(url.searchParams.has('city_id')).toBe(false)
+  })
+
+  /**
+   * By `city_id`, not the documented `city_name`: names repeat within a
+   * country, and the US alone has five Lakewoods.
+   */
+  it('narrows to a city by its id', async () => {
+    route({})
+
+    const { searchAsns } = await loadClient()
+    await searchAsns({ countryId: 'gb', cityId: 380781 })
+
+    const url = callsTo('residential_availability/search')[0]
+    expect(url.searchParams.get('country_id')).toBe('gb')
+    expect(url.searchParams.get('city_id')).toBe('380781')
+    expect(url.searchParams.has('city_name')).toBe(false)
+  })
+
+  it('narrows rows, drops ASNs with no live nodes and sorts busiest first', async () => {
+    route({
+      availability: () =>
+        availability([
+          { asn_id: 37094, asn_name: 'Orange Liberia Inc', residential_availability_node_count: 3 },
+          { asn_id: 14593, asn_name: 'Space Exploration Technologies Corporation', residential_availability_node_count: 39 },
+          { asn_id: 37203, asn_name: 'Liberia Telecommunications Corporation', residential_availability_node_count: 0 },
+        ]),
+    })
+
+    const { searchAsns } = await loadClient()
+    await expect(searchAsns({ countryId: 'lr' })).resolves.toEqual([
+      { id: 14593, name: 'Space Exploration Technologies Corporation', nodeCount: 39 },
+      { id: 37094, name: 'Orange Liberia Inc', nodeCount: 3 },
     ])
   })
 })
 
 describe('the server-side cache', () => {
   it('serves a repeated identical search from memory', async () => {
-    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
+    route({})
 
     const { searchAsns } = await loadClient()
     await searchAsns({ countryId: 'gb' })
@@ -466,40 +417,38 @@ describe('the server-side cache', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
-  /**
-   * The unfiltered ASN list is the most expensive call the app makes — sixteen
-   * pages — so it must not share a cache entry with any country's list.
-   */
-  it('keys the worldwide ASN list apart from a country ASN list', async () => {
-    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
+  it('keys worldwide, country and city ASN lists apart', async () => {
+    route({})
 
     const { searchAsns } = await loadClient()
     await searchAsns({})
     await searchAsns({ countryId: 'gb' })
+    await searchAsns({ countryId: 'gb', cityId: 1 })
     await searchAsns({})
 
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 
   it('keys cities on the country alone', async () => {
-    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
+    route({})
 
     const { searchCities } = await loadClient()
     await searchCities({ countryId: 'gb' })
     await searchCities({ countryId: 'gb' })
     await searchCities({ countryId: 'de' })
 
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(callsTo('residential_availability/search')).toHaveLength(2)
+    expect(callsTo('city/search')).toHaveLength(2)
   })
 
   it('collapses concurrent identical searches into one upstream call', async () => {
-    fetchMock.mockImplementation(() => jsonResponse({ data: [] }))
+    route({})
 
-    const { searchCities } = await loadClient()
+    const { searchAsns } = await loadClient()
     await Promise.all([
-      searchCities({ countryId: 'gb' }),
-      searchCities({ countryId: 'gb' }),
-      searchCities({ countryId: 'gb' }),
+      searchAsns({ countryId: 'gb' }),
+      searchAsns({ countryId: 'gb' }),
+      searchAsns({ countryId: 'gb' }),
     ])
 
     expect(fetchMock).toHaveBeenCalledTimes(1)
@@ -508,10 +457,10 @@ describe('the server-side cache', () => {
   it('does not cache a failure', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({}, 500))
-      .mockResolvedValueOnce(jsonResponse({ data: [] }))
+      .mockResolvedValueOnce(jsonResponse(availability([])))
 
-    const { searchCities } = await loadClient()
-    await expectCode(searchCities({ countryId: 'gb' }), 'upstream_error')
-    await expect(searchCities({ countryId: 'gb' })).resolves.toEqual([])
+    const { searchAsns } = await loadClient()
+    await expectCode(searchAsns({ countryId: 'gb' }), 'upstream_error')
+    await expect(searchAsns({ countryId: 'gb' })).resolves.toEqual([])
   })
 })

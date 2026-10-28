@@ -1,44 +1,54 @@
 import { z } from 'zod'
 
-import { searchResponseSchema } from './common'
+import {
+  availabilityNodeCount,
+  availabilityResponseSchema,
+  searchResponseSchema,
+} from './common'
 
 /**
- * The upstream shape of `GET /1.0/public/user/city/search`.
- *
- * `city_alias` is the value the proxy username needs. Aliases are lowercase
- * and underscore-separated (`london`, `east_london`, `ca_on_london`), so they
- * are already safe to drop into a username unescaped.
- *
- * `subdivision_id` is an ISO 3166-2 code such as `gb-lnd` or `de-nw`; its
- * country prefix is what the country filter matches on.
+ * A `city/search` row, read only for what availability lacks: the alias the
+ * username needs, and the ISO 3166-2 `subdivision_id` (`gb-lnd`).
  */
 export const BytefulCitySchema = z.looseObject({
+  city_id: z.number().int().positive(),
   city_alias: z.string(),
   city_name: z.string(),
-  city_node_count: z.number().int().nonnegative().nullish(),
   subdivision_id: z.string().nullish(),
 })
 
 export const BytefulCitySearchSchema = searchResponseSchema(BytefulCitySchema)
 
+/** A `residential_availability/search?group_by=city` row. */
+export const BytefulCityAvailabilitySchema = z.looseObject({
+  city_id: z.number().int().positive(),
+  city_name: z.string(),
+  residential_availability_node_count: availabilityNodeCount,
+})
+
+export const BytefulCityAvailabilityResponseSchema = availabilityResponseSchema(
+  BytefulCityAvailabilitySchema,
+)
+
 export type City = {
+  /** Byteful's `city_id`, which the ASN lookup filters on. */
+  id: number
   alias: string
   name: string
   nodeCount: number
-  /**
-   * The subdivision code without its country prefix, upper-cased: `NY` from
-   * `us-ny`. City names repeat within a country — the US has three Albanys —
-   * so this is what tells them apart in the picker. Empty when Byteful omits
-   * the field, which no observed row does.
-   */
+  /** `NY` from `us-ny`, to tell apart cities with the same name. */
   subdivision: string
 }
 
-export function narrowCity(raw: z.infer<typeof BytefulCitySchema>): City {
+export function narrowCity(
+  live: z.infer<typeof BytefulCityAvailabilitySchema>,
+  info: z.infer<typeof BytefulCitySchema>,
+): City {
   return {
-    alias: raw.city_alias,
-    name: raw.city_name,
-    nodeCount: raw.city_node_count ?? 0,
-    subdivision: (raw.subdivision_id?.split('-')[1] ?? '').toUpperCase(),
+    id: live.city_id,
+    alias: info.city_alias,
+    name: live.city_name,
+    nodeCount: live.residential_availability_node_count,
+    subdivision: (info.subdivision_id?.split('-')[1] ?? '').toUpperCase(),
   }
 }

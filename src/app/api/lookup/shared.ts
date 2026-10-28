@@ -1,20 +1,14 @@
 import { z } from 'zod'
 
 import { invalidParameter } from '@/lib/errors'
+import type { LookupResponse } from '@/lib/models'
 
 /** Browser-facing cache window for lookup responses. */
 export const LOOKUP_CACHE_CONTROL = 'public, max-age=300'
 
-export const CountryIdSchema = z
-  .string({ error: 'country_id is required and must be a two-letter code' })
-  .trim()
-  .toLowerCase()
-  .regex(/^[a-z]{2}$/, 'country_id must be a two-letter country code')
-
 /**
- * Reads an allowlist of parameters from the URL. Anything else in the query
- * string is ignored rather than forwarded, so these routes cannot be used as
- * an open proxy onto Byteful's parameter surface.
+ * Reads only the schema's keys from the URL, so other parameters are never
+ * forwarded to Byteful.
  */
 export function readParams<T extends z.ZodObject>(
   request: Request,
@@ -23,8 +17,6 @@ export function readParams<T extends z.ZodObject>(
   const url = new URL(request.url)
   const raw: Record<string, string> = {}
 
-  // `z.ZodObject` is what makes `.shape` reachable without a cast, and it is
-  // the only schema kind this can accept: the keys are read off the shape.
   for (const key of Object.keys(schema.shape)) {
     const value = url.searchParams.get(key)
     if (value !== null && value !== '') raw[key] = value
@@ -37,8 +29,9 @@ export function readParams<T extends z.ZodObject>(
 }
 
 export function lookupResponse<T>(data: T[]): Response {
+  const body: LookupResponse<T> = { data }
   return Response.json(
-    { data },
+    body,
     { status: 200, headers: { 'Cache-Control': LOOKUP_CACHE_CONTROL } },
   )
 }

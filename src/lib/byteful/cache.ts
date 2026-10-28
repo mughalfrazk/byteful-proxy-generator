@@ -2,26 +2,19 @@ import 'server-only'
 
 type Entry<T> = { value: T; expiresAt: number }
 
-/**
- * Keys come from user search text, so the map is pruned rather than left to
- * grow with every distinct query an unauthenticated caller can invent.
- */
+/** Keys come from query parameters, so the map is bounded. */
 const MAX_ENTRIES = 500
 
 /**
  * A small in-process TTL cache in front of Byteful, protecting the account's
- * shared 20 requests/second budget.
+ * 20 requests/second budget. Only successes are cached, and concurrent calls
+ * for the same key share one upstream request.
  *
- * Only successes are cached, so a rate-limited lookup is not pinned in place
- * for the next ten minutes. In-flight requests are shared, so N users typing
- * the same query produce one upstream call rather than N.
+ * Not `use cache`: it serialises thrown values, which would turn an `AppError`
+ * into a plain `Error` and every failure into `internal_error`.
  *
- * Not `use cache`: under `cacheComponents` a thrown value crossing the cache
- * boundary is serialised, which turns a typed `AppError` into a plain `Error`
- * and collapses the documented error table into one `internal_error`. The
- * cache therefore lives on our side of the throw.
- *
- * TODO per-instance only. A shared cache (Redis) is the production answer.
+ * TODO per-instance only. With several instances, a shared cache (Redis)
+ * would share both the data and the rate-limit budget.
  */
 export function cached<A, T>(
   ttlMs: number,
@@ -56,10 +49,7 @@ export function cached<A, T>(
   }
 }
 
-/**
- * Drops expired entries, then the oldest remaining ones if that was not
- * enough. Insertion order is Map iteration order, so "oldest" is free.
- */
+/** Drops expired entries, then the oldest (Map order is insertion order). */
 function prune<T>(entries: Map<string, Entry<T>>): void {
   const now = Date.now()
 

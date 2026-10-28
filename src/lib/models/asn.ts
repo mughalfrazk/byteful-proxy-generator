@@ -1,16 +1,20 @@
 import { z } from 'zod'
 
-import { searchResponseSchema } from './common'
+import { availabilityNodeCount, availabilityResponseSchema } from './common'
 
-/** The upstream shape of `GET /1.0/public/user/asn/search`. */
-export const BytefulAsnSchema = z.looseObject({
+/**
+ * A `residential_availability/search?group_by=asn` row. Not `asn/search`,
+ * which files an ASN under its country of registration, not where its nodes are.
+ */
+export const BytefulAsnAvailabilitySchema = z.looseObject({
   asn_id: z.number().int().positive(),
   asn_name: z.string(),
-  asn_node_count: z.number().int().nonnegative().nullish(),
-  country_id: z.string().nullish(),
+  residential_availability_node_count: availabilityNodeCount,
 })
 
-export const BytefulAsnSearchSchema = searchResponseSchema(BytefulAsnSchema)
+export const BytefulAsnAvailabilityResponseSchema = availabilityResponseSchema(
+  BytefulAsnAvailabilitySchema,
+)
 
 export type Asn = {
   id: number
@@ -18,10 +22,10 @@ export type Asn = {
   nodeCount: number
 }
 
-export function narrowAsn(raw: z.infer<typeof BytefulAsnSchema>): Asn {
+export function narrowAsn(raw: z.infer<typeof BytefulAsnAvailabilitySchema>): Asn {
   return {
     id: raw.asn_id,
     name: raw.asn_name,
-    nodeCount: raw.asn_node_count ?? 0,
+    nodeCount: raw.residential_availability_node_count,
   }
 }
