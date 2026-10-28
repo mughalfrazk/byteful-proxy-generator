@@ -1,12 +1,7 @@
 # Residential Proxy Generator
 
-A Next.js app that builds residential proxy lists with optional country, city
-and ASN targeting.
-
-- `POST /api/residential/list` builds the list locally — no network call.
-- `GET /api/lookup/{country,city,asn}` proxy Byteful's search endpoints, so the
-  API key never reaches the browser.
-- The result can be copied or downloaded as `.txt`.
+A Next.js app that builds Byteful residential proxy lists, with optional
+country, city and ASN targeting.
 
 ## Running the app
 
@@ -16,89 +11,83 @@ cp .env.example .env.local   # then fill in both keys
 yarn dev                     # http://localhost:3000
 ```
 
-Two environment variables, both **server-only** — neither is `NEXT_PUBLIC_`,
-and both are read in exactly one file (`src/lib/byteful/client.ts`):
+| Variable | Purpose |
+|---|---|
+| `BYTEFUL_PUBLIC_KEY` | `X-API-Public-Key` for the lookup calls |
+| `BYTEFUL_PRIVATE_KEY` | `X-API-Private-Key` for the lookup calls |
 
-| Variable | Required | Purpose |
-|---|---|---|
-| `BYTEFUL_PUBLIC_KEY` | yes | `X-API-Public-Key` on Byteful lookup calls |
-| `BYTEFUL_PRIVATE_KEY` | yes | `X-API-Private-Key` on Byteful lookup calls |
-
-Get both from [dashboard.byteful.com/developer/api-key](https://dashboard.byteful.com/developer/api-key).
-The generator itself works without them; only the three targeting dropdowns
-need them.
-
-```bash
-yarn test    # vitest, no network
-yarn lint
-yarn build
-```
+Both are server-only: neither is `NEXT_PUBLIC_`, and both are read in one file,
+`src/lib/byteful/client.ts`. Get them from
+[dashboard.byteful.com/developer/api-key](https://dashboard.byteful.com/developer/api-key).
+Without them the generator still works; only the targeting dropdowns need them.
 
 ## Assumptions
 
-- **No existence check on `city_alias` or `asn_id`.** The list endpoint
-  validates shape, not whether a value exists in Byteful's data — that would
-  need a lookup call on every generate. Through the page an invalid combination
-  cannot be built: only selecting an option writes to the form, typed-but-
-  unselected text is discarded, and changing country clears the city and ASN.
-- **`country_id` is lowercased**, so `US` and `us` are the same request.
-- **Unknown keys are rejected**, so `country` instead of `country_id` errors
-  rather than silently producing an untargeted list.
-- **Any non-empty password is accepted**, per the spec. One containing `@`, `:`
-  or `/` produces a URL most clients cannot parse, so the form warns inline
-  rather than blocking.
-- **Rotating lists repeat one identical line** `list_count` times, since they
-  carry no session ID. That is what the spec asks for; the UI notes it so it
-  does not read as a bug.
-- **Spec defaults over Byteful's real ones**: `http` rather than `standard`,
-  and no `_m_general` segment.
-- **Anything with no nodes is hidden**, matching Byteful's own dashboard. A few
-  countries whose only city reports zero (Singapore) then offer no city at all;
-  the field says so and targeting the country still works.
-- **Lookups are fetched whole and searched in the browser.** Each list is
-  bounded — 1,191 cities at most per country, 15,077 ASNs worldwide — so the
-  server pages through it once and caches it, and typing never hits the network.
-  The picker paints 100 rows at a time and another 100 each time you reach the
-  bottom, because mounting all 15,077 costs a ~3s open and ~1.7s per keystroke.
-- **`city/search` has no country filter.** Passing `country_id` is accepted and
-  silently ignored — it returns the whole world. The country lives in
-  `subdivision_id` (`gb-lnd`), so the filter is a prefix match:
-  `like_subdivision_id=gb%`.
+- **Credentials are letters and digits only.** Byteful's gateway only accepts
+  alphanumeric credentials, and both go into the proxy URL unescaped, where
+  `@`, `:` or `/` would break it.
+- **`country_id` is case-insensitive**: `US` and `us` are the same request.
+- **Unknown fields are rejected**, so `country` instead of `country_id` is an
+  error rather than an untargeted list.
+- **`city_alias` and `asn_id` are checked for shape, not existence**, since
+  that would need a lookup on every generate. The page can only submit values
+  picked from a lookup.
+- **Rotating lists repeat one identical line** `list_count` times, as the spec
+  says.
+- **The success body adds `count`** next to the spec's `data` and `message`.
+- **The lookups read `residential_availability/search`, not the three search
+  endpoints the spec lists.** It is what Byteful's dashboard uses, and the
+  search endpoints offer options that don't work:
+  - `asn/search` files an ASN under the country it is registered in. Starlink
+    (AS14593) is registered in the US, so it never appeared under Liberia,
+    where it has live nodes.
+  - Their node counts are not what is live. In October 2026, Singapore showed
+    thousands of nodes in `country/search` and none in availability.
+
+  Availability has no `city_alias`, so `city/search` is still used for
+  aliases, filtered with `like_subdivision_id=gb%25`. The spec's literal
+  `subdivision_id=gb%25` returns no cities; the `like_` operator is needed.
+- **The ASN field works without a country.** Picking a country or city
+  narrows the list. An ASN that is already picked is kept while the new
+  country or city offers it.
+- **Lookups are fetched whole and searched in the browser**, so typing never
+  sends a request and needs no debounce. Each list is cached on the server and
+  in the browser for five minutes.
 
 ## Errors
 
-Every error from every route has the same body, and only this body:
+Every error has the same body:
 
 ```json
-{ "error": "invalid_parameter", "message": "list_count must be from 1 to 1000" }
+{ "error": "invalid_parameter", "message": "list_count: must be at most 1000" }
 ```
 
-| HTTP | `error` | When |
-|---|---|---|
-| 400 | `invalid_json` | the body isn't valid JSON |
-| 400 | `invalid_parameter` | a missing, mistyped, out-of-range or unknown field; `city_alias` without `country_id` |
-| 502 | `upstream_error` | Byteful returned an unexpected 4xx/5xx |
-| 502 | `upstream_invalid_response` | the Byteful response failed schema validation |
-| 503 | `lookup_unavailable` | Byteful rate-limited (after one retry), timed out, or was unreachable |
-| 500 | `server_misconfigured` | API keys missing, or Byteful returned 401/403 |
-| 500 | `internal_error` | anything unexpected |
+| HTTP | `error` | Returned by | When |
+|---|---|---|---|
+| 400 | `invalid_json` | list | the body isn't valid JSON |
+| 400 | `invalid_parameter` | list, lookups | a missing, mistyped, out-of-range or unknown field; `city_alias` without `country_id` |
+| 413 | `payload_too_large` | list | the body is over 16 KB |
+| 500 | `internal_error` | list, lookups | anything unexpected |
+| 502 | `upstream_error` | lookups | Byteful returned an unexpected 4xx/5xx |
+| 502 | `upstream_invalid_response` | lookups | Byteful's response failed validation |
+| 503 | `lookup_unavailable` | lookups | Byteful rate-limited (after one retry), timed out or was unreachable |
+| 500 | `server_misconfigured` | lookups | API keys missing, or Byteful rejected them |
 
-One code covers every bad parameter, with the detail in `message`: all
-validation failures come from the same zod issue list, and the client renders
-the message rather than branching on codes. Upstream failures stay separate
-because they carry different statuses and different advice.
+`POST /api/residential/list` makes no network call, so it can only return
+the first four.
 
-A Byteful 401/403 is treated as *our* misconfiguration, not a user error.
-Byteful's `api_request_id` is logged server-side and never returned. Request
-bodies are never logged — they contain the proxy password.
+## Future work
 
-On success the list endpoint returns the spec's shape, plus a `count` for
-consumers reading the body by hand:
-
-```json
-{
-  "data": ["http://alice_c_gb_city_norwich_s_DDINPY7TQ0781XEO:secretpass@residential.byteful.com:8000"],
-  "message": "Residential list successfully generated.",
-  "count": 1
-}
-```
+- **A new targeting option (zip code, US state).** The username and the
+  cross-field rules come from one table, `src/lib/residential/targeting.ts`:
+  add an entry and a schema field, and the builder and validation pick it up.
+  The build fails if the field is missing from the schema. The picker is the
+  bigger part: a query in `client.ts`, a lookup route, a hook, and the field
+  in `TargetingFields`.
+- **Saved presets.** A preset is the form object minus the password, re-parsed
+  with `ListRequestSchema` when loaded, so an outdated preset fails loudly.
+- **Node count warning.** The pickers already have each option's node count;
+  a sticky list of 1,000 sessions on a city with 12 nodes deserves a warning.
+- **A shared cache and rate limiter.** The lookup cache is per process (see
+  the TODO in `src/lib/byteful/cache.ts`). With several instances, Redis
+  would share the data and Byteful's 20 requests/second budget.
