@@ -5,10 +5,21 @@ country, city and ASN targeting.
 
 ## Running the app
 
+Requires Node 22.12+ and Yarn 4 (`corepack enable` picks the pinned version).
+
 ```bash
 yarn install
 cp .env.example .env.local   # then fill in both keys
 yarn dev                     # http://localhost:3000
+```
+
+Other commands:
+
+```bash
+yarn test                    # unit and route tests, no network
+yarn lint
+yarn tsc --noEmit
+yarn build && yarn start     # production build
 ```
 
 | Variable | Purpose |

@@ -28,7 +28,7 @@
   },
   "devDependencies": {
     "@tailwindcss/turbopack": "^4",
-    "@types/node": "^20",
+    "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
@@ -39,5 +39,8 @@
     "vite": "^8.3.5",
     "vitest": "^5.0.5"
   },
-  "packageManager": "yarn@4.14.1"
+  "packageManager": "yarn@4.14.1",
+  "engines": {
+    "node": ">=22.12"
+  }
 }
